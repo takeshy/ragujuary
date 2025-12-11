@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -205,6 +206,8 @@ func (c *Client) ListAllFiles() ([]FileResponse, error) {
 
 // GetFile gets a file by name
 func (c *Client) GetFile(name string) (*FileResponse, error) {
+	// Strip "files/" prefix if present (API returns full resource name)
+	name = strings.TrimPrefix(name, "files/")
 	url := fmt.Sprintf("%s/%s?key=%s", filesURL, name, c.apiKey)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -237,6 +240,8 @@ func (c *Client) GetFile(name string) (*FileResponse, error) {
 
 // DeleteFile deletes a file by name
 func (c *Client) DeleteFile(name string) error {
+	// Strip "files/" prefix if present (API returns full resource name)
+	name = strings.TrimPrefix(name, "files/")
 	url := fmt.Sprintf("%s/%s?key=%s", filesURL, name, c.apiKey)
 
 	req, err := http.NewRequest("DELETE", url, nil)

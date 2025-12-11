@@ -1,17 +1,28 @@
 # ragujuary
 
-Gemini File Search CLI tool for managing files in Google Gemini.
+A CLI tool for managing Gemini File Search Stores - Google's fully managed RAG (Retrieval-Augmented Generation) system.
 
 ## Features
 
-- Upload files from multiple directories to named stores
-- Exclude files using regex patterns
+- Create and manage Gemini File Search Stores
+- Upload files from multiple directories with automatic chunking and embedding
+- Query your documents using natural language (RAG)
 - Parallel uploads (default 5 workers)
 - Checksum-based deduplication (skip unchanged files)
-- Delete files by regex pattern
-- List uploaded files with filtering
+- Delete files or entire stores
+- List uploaded documents with filtering
 - Sync local metadata with remote state
-- Clean up files that no longer exist locally
+- Built-in citations for verifiable responses
+
+## What is Gemini File Search?
+
+Gemini File Search is a fully managed RAG system built into the Gemini API. Unlike the basic File API (which expires files after 48 hours), File Search Stores:
+
+- Store documents indefinitely until manually deleted
+- Automatically chunk and create embeddings for your documents
+- Provide semantic search over your content
+- Support a wide range of formats (PDF, DOCX, TXT, JSON, code files, etc.)
+- Include citations in responses for verification
 
 ## Installation
 
@@ -39,64 +50,71 @@ Or use the `--api-key` flag with each command.
 
 ## Usage
 
-### Upload files
-
-Upload files from directories to a store:
+### Create a store and upload files
 
 ```bash
-# Upload from a single directory
-ragujuary upload ./docs
+# Create a store and upload files
+ragujuary upload --create -s mystore ./docs
 
 # Upload from multiple directories
-ragujuary upload ./docs ./src ./config
-
-# Upload to a named store
-ragujuary upload -s mystore ./docs
+ragujuary upload --create -s mystore ./docs ./src ./config
 
 # Exclude files matching patterns
-ragujuary upload -e '\.git' -e 'node_modules' -e '\.test\.go$' ./project
+ragujuary upload --create -s mystore -e '\.git' -e 'node_modules' ./project
 
 # Set parallelism
-ragujuary upload -p 10 ./large-project
+ragujuary upload -s mystore -p 10 ./large-project
 
 # Dry run (see what would be uploaded)
-ragujuary upload --dry-run ./docs
+ragujuary upload -s mystore --dry-run ./docs
 ```
 
-### List files
-
-List files in a store:
+### Query your documents (RAG)
 
 ```bash
-# List all files in default store
-ragujuary list
+# Basic query
+ragujuary query -s mystore "What are the main features?"
 
-# List all stores
+# Use a different model
+ragujuary query -s mystore -m gemini-2.5-pro "Explain the architecture"
+
+# Show citation details
+ragujuary query -s mystore --citations "How does authentication work?"
+```
+
+### List stores and files
+
+```bash
+# List all File Search Stores
 ragujuary list --stores
 
-# List files in a named store
+# List documents in a store (from remote API)
+ragujuary list -s mystore --remote
+
+# List documents from local cache
 ragujuary list -s mystore
 
 # Filter by pattern
-ragujuary list -P '\.go$'
+ragujuary list -s mystore -P '\.go$'
 
 # Show detailed information
-ragujuary list -l
+ragujuary list -s mystore -l --remote
 ```
 
-### Delete files
-
-Delete files matching a pattern:
+### Delete files or stores
 
 ```bash
 # Delete files matching pattern
-ragujuary delete -P '\.tmp$'
+ragujuary delete -s mystore -P '\.tmp$'
 
 # Force delete without confirmation
-ragujuary delete -P '\.log$' -f
+ragujuary delete -s mystore -P '\.log$' -f
 
-# Delete from specific store
-ragujuary delete -s mystore -P 'old/'
+# Delete an entire store
+ragujuary delete -s mystore --store
+
+# Force delete store without confirmation
+ragujuary delete -s mystore --store -f
 ```
 
 ### Status
@@ -104,7 +122,6 @@ ragujuary delete -s mystore -P 'old/'
 Check status of files (modified, unchanged, missing):
 
 ```bash
-ragujuary status
 ragujuary status -s mystore
 ```
 
@@ -113,16 +130,16 @@ ragujuary status -s mystore
 Sync local metadata with remote state:
 
 ```bash
-ragujuary sync
+ragujuary sync -s mystore
 ```
 
 ### Clean
 
-Remove remote files that no longer exist locally:
+Remove remote documents that no longer exist locally:
 
 ```bash
-ragujuary clean
-ragujuary clean -f  # force without confirmation
+ragujuary clean -s mystore
+ragujuary clean -s mystore -f  # force without confirmation
 ```
 
 ## Data Storage
@@ -131,7 +148,7 @@ File metadata is stored in `~/.ragujuary.json` by default. Use `--data-file` to 
 
 Each store tracks:
 - Local file path
-- Remote file ID
+- Remote document ID
 - SHA256 checksum
 - File size
 - Upload timestamp
@@ -145,6 +162,26 @@ Each store tracks:
 | `--store` | `-s` | Store name | `default` |
 | `--data-file` | `-d` | Path to data file | `~/.ragujuary.json` |
 | `--parallelism` | `-p` | Number of parallel uploads | `5` |
+
+## Supported File Formats
+
+File Search supports a wide range of formats:
+- Documents: PDF, DOCX, TXT, MD
+- Data: JSON, CSV, XML
+- Code: Go, Python, JavaScript, TypeScript, Java, C, C++, and more
+
+## Pricing
+
+- Embedding generation at indexing: $0.15 per 1M tokens
+- Storage: Free
+- Query-time embeddings: Free
+- Retrieved tokens: Standard context token rates
+
+## Limits
+
+- Max file size: 100 MB per file
+- Storage: 1 GB (Free tier) to 1 TB (Tier 3)
+- Max stores per project: 10
 
 ## License
 

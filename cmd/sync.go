@@ -13,8 +13,8 @@ import (
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync store with remote",
-	Long: `Sync the local store metadata with the remote Gemini files.
-This will remove entries for files that no longer exist remotely.`,
+	Long: `Sync the local store metadata with the remote Gemini File Search Store.
+This will update local entries to match the remote state.`,
 	RunE: runSync,
 }
 
@@ -34,44 +34,68 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize store manager: %w", err)
 	}
 
-	// Check if store exists
-	_, exists := storeManager.GetStore(storeName)
-	if !exists {
-		return fmt.Errorf("store '%s' not found", storeName)
-	}
-
 	// Create client
 	client := gemini.NewClient(key)
 
-	// Get all remote files
-	fmt.Println("Fetching remote files...")
-	remoteFiles, err := client.ListAllFiles()
+	// Get remote store
+	remoteStore, err := client.GetFileSearchStore(storeName)
 	if err != nil {
-		return fmt.Errorf("failed to list remote files: %w", err)
+		return fmt.Errorf("File Search Store '%s' not found: %w", storeName, err)
 	}
 
-	// Create map of remote file IDs
-	remoteIDs := make(map[string]gemini.FileResponse)
-	for _, f := range remoteFiles {
-		remoteIDs[f.Name] = f
+	fmt.Printf("Syncing with File Search Store '%s'...\n", remoteStore.DisplayName)
+
+	// Ensure local store exists
+	storeManager.GetOrCreateStore(storeName)
+
+	// Get all remote documents
+	fmt.Println("Fetching remote documents...")
+	remoteDocs, err := client.ListAllDocuments(storeName)
+	if err != nil {
+		return fmt.Errorf("failed to list remote documents: %w", err)
+	}
+
+	// Create map of remote documents by display name
+	remoteByDisplayName := make(map[string]gemini.FileSearchDocument)
+	remoteByName := make(map[string]gemini.FileSearchDocument)
+	for _, d := range remoteDocs {
+		remoteByDisplayName[d.DisplayName] = d
+		remoteByName[d.Name] = d
 	}
 
 	// Get local files
 	localFiles := storeManager.GetAllFiles(storeName)
 
 	var removed int
+	var updated int
 	var orphaned int
 
 	// Check for files that exist locally but not remotely
 	for _, f := range localFiles {
-		if _, exists := remoteIDs[f.RemoteID]; !exists {
-			fmt.Printf("  Removing orphaned entry: %s\n", f.LocalPath)
-			storeManager.RemoveFile(storeName, f.LocalPath)
-			removed++
+		// Check by display name first
+		if _, exists := remoteByDisplayName[f.LocalPath]; !exists {
+			// Also check by remote ID
+			if _, exists := remoteByName[f.RemoteID]; !exists {
+				fmt.Printf("  Removing orphaned entry: %s\n", f.LocalPath)
+				storeManager.RemoveFile(storeName, f.LocalPath)
+				removed++
+			}
+		}
+	}
+
+	// Update local entries with remote document names
+	for _, f := range localFiles {
+		if doc, exists := remoteByDisplayName[f.LocalPath]; exists {
+			if f.RemoteID != doc.Name {
+				f.RemoteID = doc.Name
+				storeManager.AddFile(storeName, f)
+				updated++
+			}
 		}
 	}
 
 	// Check for files that exist locally but have been deleted from disk
+	localFiles = storeManager.GetAllFiles(storeName) // Refresh after updates
 	for _, f := range localFiles {
 		if _, err := os.Stat(f.LocalPath); os.IsNotExist(err) {
 			fmt.Printf("  Local file missing: %s\n", f.LocalPath)
@@ -85,9 +109,10 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nSync complete:\n")
-	fmt.Printf("  Remote files: %d\n", len(remoteFiles))
-	fmt.Printf("  Local entries: %d\n", len(localFiles))
+	fmt.Printf("  Remote documents: %d\n", len(remoteDocs))
+	fmt.Printf("  Local entries: %d\n", len(storeManager.GetAllFiles(storeName)))
 	fmt.Printf("  Removed orphaned entries: %d\n", removed)
+	fmt.Printf("  Updated entries: %d\n", updated)
 	fmt.Printf("  Missing local files: %d\n", orphaned)
 
 	return nil
@@ -97,7 +122,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 var cleanCmd = &cobra.Command{
 	Use:   "clean",
 	Short: "Clean up files that no longer exist locally",
-	Long: `Remove files from remote Gemini that exist in the store but are missing locally.
+	Long: `Remove documents from remote File Search Store that exist in the store but are missing locally.
 This is useful when you've deleted local files and want to clean up the remote.`,
 	RunE: runClean,
 }
@@ -150,7 +175,7 @@ func runClean(cmd *cobra.Command, args []string) error {
 	}
 
 	if !forceDelete {
-		fmt.Print("\nDelete these files from remote? [y/N]: ")
+		fmt.Print("\nDelete these documents from remote? [y/N]: ")
 		var response string
 		fmt.Scanln(&response)
 		if response != "y" && response != "yes" {
@@ -161,7 +186,7 @@ func runClean(cmd *cobra.Command, args []string) error {
 
 	var deleted, failed int
 	for _, f := range toDelete {
-		if err := client.DeleteFile(f.RemoteID); err != nil {
+		if err := client.DeleteDocument(f.RemoteID); err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ Failed to delete %s: %v\n", f.LocalPath, err)
 			failed++
 			continue

@@ -14,14 +14,17 @@ import (
 var (
 	excludePatterns []string
 	dryRun          bool
+	createStore     bool
 )
 
 var uploadCmd = &cobra.Command{
 	Use:   "upload [directories...]",
-	Short: "Upload files to a store",
-	Long: `Upload files from specified directories to a Gemini store.
+	Short: "Upload files to a File Search Store",
+	Long: `Upload files from specified directories to a Gemini File Search Store.
 Files matching exclude patterns will be skipped.
-Files with unchanged checksums will not be re-uploaded.`,
+Files with unchanged checksums will not be re-uploaded.
+
+The File Search Store must exist, or use --create to create it automatically.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runUpload,
 }
@@ -29,6 +32,7 @@ Files with unchanged checksums will not be re-uploaded.`,
 func init() {
 	uploadCmd.Flags().StringArrayVarP(&excludePatterns, "exclude", "e", nil, "Regex patterns to exclude files (can be specified multiple times)")
 	uploadCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be uploaded without actually uploading")
+	uploadCmd.Flags().BoolVar(&createStore, "create", false, "Create the File Search Store if it doesn't exist")
 	rootCmd.AddCommand(uploadCmd)
 }
 
@@ -44,8 +48,29 @@ func runUpload(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize store manager: %w", err)
 	}
 
-	// Ensure store exists
-	storeManager.GetOrCreateStore(storeName)
+	// Create client
+	client := gemini.NewClient(key)
+
+	// Check if File Search Store exists on Gemini
+	remoteStore, err := client.GetFileSearchStore(storeName)
+	if err != nil {
+		if createStore {
+			fmt.Printf("Creating File Search Store '%s'...\n", storeName)
+			remoteStore, err = client.CreateFileSearchStore(storeName)
+			if err != nil {
+				return fmt.Errorf("failed to create File Search Store: %w", err)
+			}
+			fmt.Printf("Created File Search Store: %s\n", remoteStore.Name)
+		} else {
+			return fmt.Errorf("File Search Store '%s' not found. Use --create to create it, or create it manually first", storeName)
+		}
+	}
+
+	// Ensure local store exists with the remote store name
+	remoteStoreName := remoteStore.Name
+	// Strip prefix for local storage key
+	localStoreName := strings.TrimPrefix(remoteStoreName, "fileSearchStores/")
+	storeManager.GetOrCreateStore(localStoreName)
 
 	// Discover files
 	fmt.Printf("Discovering files in directories: %s\n", strings.Join(args, ", "))
@@ -73,13 +98,12 @@ func runUpload(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Create client and uploader
-	client := gemini.NewClient(key)
-	uploader := gemini.NewUploader(client, storeManager, storeName, parallelism)
+	// Create uploader
+	uploader := gemini.NewUploader(client, storeManager, localStoreName, parallelism)
 
 	// Upload files with progress
 	var uploaded, skipped, failed int
-	fmt.Printf("Uploading files to store '%s' (parallelism: %d)...\n\n", storeName, parallelism)
+	fmt.Printf("Uploading files to File Search Store '%s' (parallelism: %d)...\n\n", localStoreName, parallelism)
 
 	results := uploader.UploadFiles(files, func(result gemini.UploadResult) {
 		if result.Error != nil {

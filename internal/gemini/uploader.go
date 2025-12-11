@@ -18,12 +18,13 @@ type UploadResult struct {
 	Reason   string
 }
 
-// Uploader handles parallel file uploads
+// Uploader handles parallel file uploads to File Search Store
 type Uploader struct {
 	client       *Client
 	storeManager *store.Manager
 	storeName    string
 	parallelism  int
+	waitForDone  bool
 }
 
 // NewUploader creates a new uploader
@@ -36,10 +37,16 @@ func NewUploader(client *Client, storeManager *store.Manager, storeName string, 
 		storeManager: storeManager,
 		storeName:    storeName,
 		parallelism:  parallelism,
+		waitForDone:  true,
 	}
 }
 
-// UploadFiles uploads multiple files in parallel
+// SetWaitForDone sets whether to wait for upload operations to complete
+func (u *Uploader) SetWaitForDone(wait bool) {
+	u.waitForDone = wait
+}
+
+// UploadFiles uploads multiple files in parallel to a File Search Store
 func (u *Uploader) UploadFiles(files []fileutil.FileInfo, progressCallback func(result UploadResult)) []UploadResult {
 	results := make([]UploadResult, len(files))
 	jobs := make(chan int, len(files))
@@ -70,7 +77,7 @@ func (u *Uploader) UploadFiles(files []fileutil.FileInfo, progressCallback func(
 	return results
 }
 
-// uploadFile uploads a single file
+// uploadFile uploads a single file to the File Search Store
 func (u *Uploader) uploadFile(file fileutil.FileInfo) UploadResult {
 	result := UploadResult{
 		FileInfo: file,
@@ -93,33 +100,44 @@ func (u *Uploader) uploadFile(file fileutil.FileInfo) UploadResult {
 		return result
 	}
 
-	// If file exists but checksum changed, delete old file first
-	if found {
-		if err := u.client.DeleteFile(existing.RemoteID); err != nil {
+	// If file exists but checksum changed, delete old document first
+	if found && existing.RemoteID != "" {
+		if err := u.client.DeleteDocument(existing.RemoteID); err != nil {
 			// Log warning but continue with upload
-			fmt.Printf("Warning: failed to delete old file %s: %v\n", existing.RemoteID, err)
+			fmt.Printf("Warning: failed to delete old document %s: %v\n", existing.RemoteID, err)
 		}
 	}
 
-	// Create display name with store prefix
-	displayName := fmt.Sprintf("[%s] %s", u.storeName, file.Path)
+	// Create upload config with display name
+	config := &UploadConfig{
+		DisplayName: file.Path,
+	}
 
-	// Upload file
-	resp, err := u.client.UploadFile(file.Path, displayName, file.MimeType)
+	// Upload file to File Search Store
+	op, err := u.client.UploadToFileSearchStore(u.storeName, file.Path, config)
 	if err != nil {
 		result.Error = fmt.Errorf("failed to upload: %w", err)
 		return result
 	}
 
+	// Wait for operation to complete if configured
+	if u.waitForDone && !op.Done {
+		op, err = u.client.WaitForOperation(op.Name, 2*time.Second)
+		if err != nil {
+			result.Error = fmt.Errorf("upload operation failed: %w", err)
+			return result
+		}
+	}
+
 	// Create metadata
 	meta := store.FileMetadata{
-		LocalPath:   file.Path,
-		RemoteID:    resp.Name,
-		RemoteName:  resp.DisplayName,
-		Checksum:    checksum,
-		Size:        file.Size,
-		UploadedAt:  time.Now(),
-		MimeType:    file.MimeType,
+		LocalPath:  file.Path,
+		RemoteID:   op.Name, // Store operation name, will be replaced with document name when we list
+		RemoteName: file.Path,
+		Checksum:   checksum,
+		Size:       file.Size,
+		UploadedAt: time.Now(),
+		MimeType:   file.MimeType,
 	}
 
 	// Save to store
@@ -129,7 +147,7 @@ func (u *Uploader) uploadFile(file fileutil.FileInfo) UploadResult {
 	return result
 }
 
-// DeleteFilesByPattern deletes files matching a pattern
+// DeleteFilesByPattern deletes documents matching a pattern from the File Search Store
 func (u *Uploader) DeleteFilesByPattern(pattern string) ([]store.FileMetadata, []error) {
 	files := u.storeManager.GetAllFiles(u.storeName)
 	if len(files) == 0 {
@@ -162,8 +180,8 @@ func (u *Uploader) DeleteFilesByPattern(pattern string) ([]store.FileMetadata, [
 			continue
 		}
 
-		// Delete from Gemini
-		if err := u.client.DeleteFile(f.RemoteID); err != nil {
+		// Delete document from File Search Store
+		if err := u.client.DeleteDocument(f.RemoteID); err != nil {
 			errors = append(errors, fmt.Errorf("failed to delete %s: %w", f.LocalPath, err))
 			continue
 		}

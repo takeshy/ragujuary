@@ -15,20 +15,24 @@ import (
 var (
 	deletePattern string
 	forceDelete   bool
+	deleteStore   bool
 )
 
 var deleteCmd = &cobra.Command{
 	Use:   "delete",
-	Short: "Delete files from a store",
-	Long: `Delete files from a Gemini store matching a regex pattern.
-The pattern is matched against the local file path.`,
+	Short: "Delete files or a store",
+	Long: `Delete files from a Gemini File Search Store, or delete the entire store.
+
+Use --pattern to delete files matching a regex pattern.
+Use --store to delete the entire File Search Store.
+Use --force to skip confirmation prompts.`,
 	RunE: runDelete,
 }
 
 func init() {
-	deleteCmd.Flags().StringVarP(&deletePattern, "pattern", "P", "", "Regex pattern to match files for deletion (required)")
+	deleteCmd.Flags().StringVarP(&deletePattern, "pattern", "P", "", "Regex pattern to match files for deletion")
 	deleteCmd.Flags().BoolVarP(&forceDelete, "force", "f", false, "Force deletion without confirmation")
-	deleteCmd.MarkFlagRequired("pattern")
+	deleteCmd.Flags().BoolVar(&deleteStore, "store", false, "Delete the entire File Search Store")
 	rootCmd.AddCommand(deleteCmd)
 }
 
@@ -38,6 +42,56 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	client := gemini.NewClient(key)
+
+	// Delete entire store
+	if deleteStore {
+		return deleteEntireStore(client)
+	}
+
+	// Delete files matching pattern
+	if deletePattern == "" {
+		return fmt.Errorf("please specify --pattern to delete files or --store to delete the entire store")
+	}
+
+	return deleteFilesByPattern(client)
+}
+
+func deleteEntireStore(client *gemini.Client) error {
+	// Check if store exists
+	_, err := client.GetFileSearchStore(storeName)
+	if err != nil {
+		return fmt.Errorf("File Search Store '%s' not found: %w", storeName, err)
+	}
+
+	if !forceDelete {
+		fmt.Printf("Are you sure you want to delete File Search Store '%s' and all its documents? [y/N]: ", storeName)
+		reader := bufio.NewReader(os.Stdin)
+		response, _ := reader.ReadString('\n')
+		response = strings.TrimSpace(strings.ToLower(response))
+		if response != "y" && response != "yes" {
+			fmt.Println("Delete cancelled")
+			return nil
+		}
+	}
+
+	fmt.Printf("Deleting File Search Store '%s'...\n", storeName)
+	if err := client.DeleteFileSearchStore(storeName, true); err != nil {
+		return fmt.Errorf("failed to delete store: %w", err)
+	}
+
+	// Remove from local store
+	storeManager, err := store.NewManager(dataFile)
+	if err == nil {
+		storeManager.DeleteStore(storeName)
+		storeManager.Save()
+	}
+
+	fmt.Println("File Search Store deleted successfully")
+	return nil
+}
+
+func deleteFilesByPattern(client *gemini.Client) error {
 	// Initialize store manager
 	storeManager, err := store.NewManager(dataFile)
 	if err != nil {
@@ -45,9 +99,9 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if store exists
-	st, exists := storeManager.GetStore(storeName)
+	_, exists := storeManager.GetStore(storeName)
 	if !exists {
-		return fmt.Errorf("store '%s' not found", storeName)
+		return fmt.Errorf("store '%s' not found in local cache", storeName)
 	}
 
 	// Get files matching pattern
@@ -93,8 +147,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create client
-	client := gemini.NewClient(key)
+	// Create uploader for deletion
 	uploader := gemini.NewUploader(client, storeManager, storeName, parallelism)
 
 	// Delete files
@@ -119,9 +172,6 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("some deletions failed")
 	}
-
-	// Update store info
-	_ = st // Silence unused variable warning
 
 	return nil
 }

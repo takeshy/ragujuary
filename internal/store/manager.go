@@ -195,3 +195,16 @@ func (m *Manager) GetAllFiles(storeName string) []FileMetadata {
 	}
 	return files
 }
+
+// DeleteStore removes a store entirely
+func (m *Manager) DeleteStore(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.data.Stores[name]; !ok {
+		return false
+	}
+
+	delete(m.data.Stores, name)
+	return true
+}

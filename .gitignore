@@ -1,0 +1,16 @@
+# Binaries
+ragujuary
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data files
+.ragujuary.json
+
+# OS files
+.DS_Store
+Thumbs.db

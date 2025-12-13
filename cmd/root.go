@@ -8,6 +8,7 @@ import (
 )
 
 var (
+	Version     = "dev"
 	apiKey      string
 	storeName   string
 	dataFile    string
@@ -15,8 +16,9 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "ragujuary",
-	Short: "Gemini File Search CLI tool",
+	Use:     "ragujuary",
+	Short:   "Gemini File Search CLI tool",
+	Version: Version,
 	Long: `ragujuary is a CLI tool for managing files in Gemini File Search.
 It allows you to upload, list, and delete files from named stores.`,
 }

@@ -137,10 +137,10 @@ ragujuary delete -s mystore -P '\.tmp$'
 ragujuary delete -s mystore -P '\.log$' -f
 
 # ストア全体を削除
-ragujuary delete -s mystore --store
+ragujuary delete -s mystore --all
 
 # 確認なしでストアを強制削除
-ragujuary delete -s mystore --store -f
+ragujuary delete -s mystore --all -f
 ```
 
 ### ステータス

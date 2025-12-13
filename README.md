@@ -137,10 +137,10 @@ ragujuary delete -s mystore -P '\.tmp$'
 ragujuary delete -s mystore -P '\.log$' -f
 
 # Delete an entire store
-ragujuary delete -s mystore --store
+ragujuary delete -s mystore --all
 
 # Force delete store without confirmation
-ragujuary delete -s mystore --store -f
+ragujuary delete -s mystore --all -f
 ```
 
 ### Status

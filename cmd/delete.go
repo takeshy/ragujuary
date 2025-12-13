@@ -24,7 +24,7 @@ var deleteCmd = &cobra.Command{
 	Long: `Delete files from a Gemini File Search Store, or delete the entire store.
 
 Use --pattern to delete files matching a regex pattern.
-Use --store to delete the entire File Search Store.
+Use --all to delete the entire File Search Store.
 Use --force to skip confirmation prompts.`,
 	RunE: runDelete,
 }
@@ -32,7 +32,7 @@ Use --force to skip confirmation prompts.`,
 func init() {
 	deleteCmd.Flags().StringVarP(&deletePattern, "pattern", "P", "", "Regex pattern to match files for deletion")
 	deleteCmd.Flags().BoolVarP(&forceDelete, "force", "f", false, "Force deletion without confirmation")
-	deleteCmd.Flags().BoolVar(&deleteStore, "store", false, "Delete the entire File Search Store")
+	deleteCmd.Flags().BoolVar(&deleteStore, "all", false, "Delete the entire File Search Store")
 	rootCmd.AddCommand(deleteCmd)
 }
 

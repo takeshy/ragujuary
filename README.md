@@ -101,8 +101,8 @@ ragujuary upload -s mystore --dry-run ./docs
 # Basic query
 ragujuary query -s mystore "What are the main features?"
 
-# Use a different model
-ragujuary query -s mystore -m gemini-2.5-pro "Explain the architecture"
+# Use a different model (default: gemini-3-pro-preview)
+ragujuary query -s mystore -m gemini-2.5-flash "Explain the architecture"
 
 # Show citation details
 ragujuary query -s mystore --citations "How does authentication work?"

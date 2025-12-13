@@ -30,7 +30,7 @@ Example:
 }
 
 func init() {
-	queryCmd.Flags().StringVarP(&queryModel, "model", "m", "gemini-2.5-flash", "Model to use for generation")
+	queryCmd.Flags().StringVarP(&queryModel, "model", "m", "gemini-3-pro-preview", "Model to use for generation")
 	queryCmd.Flags().StringVar(&queryMetadataFilter, "filter", "", "Metadata filter (e.g., 'author=\"John\"')")
 	queryCmd.Flags().BoolVar(&showCitations, "citations", false, "Show citation details")
 	rootCmd.AddCommand(queryCmd)

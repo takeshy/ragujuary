@@ -101,8 +101,8 @@ ragujuary upload -s mystore --dry-run ./docs
 # 基本的なクエリ
 ragujuary query -s mystore "主な機能は何ですか？"
 
-# 別のモデルを使用
-ragujuary query -s mystore -m gemini-2.5-pro "アーキテクチャを説明して"
+# 別のモデルを使用（デフォルト: gemini-3-pro-preview）
+ragujuary query -s mystore -m gemini-2.5-flash "アーキテクチャを説明して"
 
 # 引用の詳細を表示
 ragujuary query -s mystore --citations "認証はどのように機能しますか？"

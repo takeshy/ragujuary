@@ -48,6 +48,32 @@ export GEMINI_API_KEY=your-api-key
 
 または、各コマンドで `--api-key` フラグを使用。
 
+オプションで、デフォルトのストア名を設定：
+
+```bash
+export RAGUJUARY_STORE=mystore
+```
+
+または、各コマンドで `--store` / `-s` フラグを使用。
+
+### ストア名の指定方法
+
+ストアは **display name**（推奨）または完全なAPI名で指定できます：
+
+```bash
+# display name を使用（シンプル、推奨）
+ragujuary list -s my-store --remote
+
+# 完全なAPI名を使用（fileSearchStores/ プレフィックス付き）
+ragujuary list -s fileSearchStores/mystore-abc123xyz --remote
+```
+
+利用可能なストアとdisplay nameを確認：
+
+```bash
+ragujuary list --stores
+```
+
 ## 使い方
 
 ### ストアを作成してファイルをアップロード
@@ -127,11 +153,20 @@ ragujuary status -s mystore
 
 ### 同期
 
-ローカルメタデータをリモート状態と同期：
+ローカルメタデータをリモート状態と同期。リモートのドキュメントをローカルキャッシュにインポートします：
 
 ```bash
+# リモートのドキュメントをローカルキャッシュにインポート
 ragujuary sync -s mystore
+
+# sync後はローカルキャッシュから一覧表示可能（高速、API呼び出し不要）
+ragujuary list -s mystore
 ```
+
+sync コマンドの動作：
+- ローカルに存在しないリモートドキュメントをインポート
+- リモートに存在しなくなった孤立エントリを削除
+- ローカルエントリを現在のリモートドキュメントIDで更新
 
 ### クリーン
 
@@ -159,7 +194,7 @@ ragujuary clean -s mystore -f  # 確認なしで強制実行
 | フラグ | 短縮形 | 説明 | デフォルト |
 |------|-------|-------------|---------|
 | `--api-key` | `-k` | Gemini API キー | `$GEMINI_API_KEY` |
-| `--store` | `-s` | ストア名 | `default` |
+| `--store` | `-s` | ストア名 | `$RAGUJUARY_STORE` または `default` |
 | `--data-file` | `-d` | データファイルのパス | `~/.ragujuary.json` |
 | `--parallelism` | `-p` | 並列アップロード数 | `5` |
 

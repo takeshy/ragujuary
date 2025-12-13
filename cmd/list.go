@@ -96,8 +96,14 @@ func listFilesRemote() error {
 
 	client := gemini.NewClient(key)
 
-	fmt.Printf("Fetching documents from File Search Store '%s'...\n\n", storeName)
-	docs, err := client.ListAllDocuments(storeName)
+	// Resolve store name (supports both API name and display name)
+	resolvedName, store, err := client.ResolveStoreName(storeName)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Fetching documents from File Search Store '%s' (%s)...\n\n", store.DisplayName, resolvedName)
+	docs, err := client.ListAllDocuments(resolvedName)
 	if err != nil {
 		return fmt.Errorf("failed to list documents: %w", err)
 	}
@@ -164,16 +170,31 @@ func listFilesLocal() error {
 		return fmt.Errorf("failed to initialize store manager: %w", err)
 	}
 
-	// Check if store exists
+	// Try to find store by name directly first
+	localStoreName := storeName
 	st, exists := storeManager.GetStore(storeName)
 	if !exists {
-		return fmt.Errorf("store '%s' not found in local cache. Use --remote to fetch from Gemini API", storeName)
+		// If not found, try to resolve via API and search by resolved name
+		key, err := getAPIKey()
+		if err != nil {
+			return fmt.Errorf("store '%s' not found in local cache. Use --remote to fetch from Gemini API", storeName)
+		}
+		client := gemini.NewClient(key)
+		resolvedName, _, err := client.ResolveStoreName(storeName)
+		if err != nil {
+			return fmt.Errorf("store '%s' not found in local cache. Use --remote to fetch from Gemini API", storeName)
+		}
+		st, exists = storeManager.GetStore(resolvedName)
+		if !exists {
+			return fmt.Errorf("store '%s' not found in local cache. Use 'ragujuary sync -s %s' to import from remote", storeName, storeName)
+		}
+		localStoreName = resolvedName
 	}
 
 	// Get all files
-	files := storeManager.GetAllFiles(storeName)
+	files := storeManager.GetAllFiles(localStoreName)
 	if len(files) == 0 {
-		fmt.Printf("No files in store '%s' (local cache)\n", storeName)
+		fmt.Printf("No files in store '%s' (local cache)\n", localStoreName)
 		return nil
 	}
 
@@ -194,7 +215,7 @@ func listFilesLocal() error {
 	}
 
 	if len(files) == 0 {
-		fmt.Printf("No files matching pattern '%s' in store '%s'\n", listPattern, storeName)
+		fmt.Printf("No files matching pattern '%s' in store '%s'\n", listPattern, localStoreName)
 		return nil
 	}
 
@@ -204,7 +225,7 @@ func listFilesLocal() error {
 	})
 
 	// Print files
-	fmt.Printf("Files in store '%s' (%d total, from local cache):\n\n", storeName, len(files))
+	fmt.Printf("Files in store '%s' (%d total, from local cache):\n\n", localStoreName, len(files))
 
 	if listLong {
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)

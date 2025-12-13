@@ -47,11 +47,12 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	// Create client
 	client := gemini.NewClient(key)
 
-	// Check if store exists
-	remoteStore, err := client.GetFileSearchStore(storeName)
+	// Resolve store name (supports both API name and display name)
+	resolvedName, remoteStore, err := client.ResolveStoreName(storeName)
 	if err != nil {
 		return fmt.Errorf("File Search Store '%s' not found: %w", storeName, err)
 	}
+	_ = resolvedName
 
 	fmt.Printf("Querying File Search Store '%s'...\n\n", remoteStore.DisplayName)
 

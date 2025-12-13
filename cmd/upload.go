@@ -51,8 +51,8 @@ func runUpload(cmd *cobra.Command, args []string) error {
 	// Create client
 	client := gemini.NewClient(key)
 
-	// Check if File Search Store exists on Gemini
-	remoteStore, err := client.GetFileSearchStore(storeName)
+	// Check if File Search Store exists on Gemini (supports both API name and display name)
+	resolvedName, remoteStore, err := client.ResolveStoreName(storeName)
 	if err != nil {
 		if createStore {
 			fmt.Printf("Creating File Search Store '%s'...\n", storeName)
@@ -60,11 +60,13 @@ func runUpload(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to create File Search Store: %w", err)
 			}
+			resolvedName = strings.TrimPrefix(remoteStore.Name, "fileSearchStores/")
 			fmt.Printf("Created File Search Store: %s\n", remoteStore.Name)
 		} else {
 			return fmt.Errorf("File Search Store '%s' not found. Use --create to create it, or create it manually first", storeName)
 		}
 	}
+	_ = resolvedName // Used for local store name below
 
 	// Ensure local store exists with the remote store name
 	remoteStoreName := remoteStore.Name

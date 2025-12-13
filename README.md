@@ -48,6 +48,32 @@ export GEMINI_API_KEY=your-api-key
 
 Or use the `--api-key` flag with each command.
 
+Optionally, set a default store name:
+
+```bash
+export RAGUJUARY_STORE=mystore
+```
+
+Or use the `--store` / `-s` flag with each command.
+
+### Store Name Resolution
+
+You can specify stores by **display name** (recommended) or full API name:
+
+```bash
+# Using display name (simple, recommended)
+ragujuary list -s my-store --remote
+
+# Using full API name (with fileSearchStores/ prefix)
+ragujuary list -s fileSearchStores/mystore-abc123xyz --remote
+```
+
+To see available stores and their display names:
+
+```bash
+ragujuary list --stores
+```
+
 ## Usage
 
 ### Create a store and upload files
@@ -127,11 +153,20 @@ ragujuary status -s mystore
 
 ### Sync
 
-Sync local metadata with remote state:
+Sync local metadata with remote state. This imports remote documents into the local cache:
 
 ```bash
+# Import remote documents to local cache
 ragujuary sync -s mystore
+
+# After sync, you can list from local cache (faster, no API call)
+ragujuary list -s mystore
 ```
+
+The sync command:
+- Imports documents from remote that don't exist locally
+- Removes orphaned local entries that no longer exist on remote
+- Updates local entries with current remote document IDs
 
 ### Clean
 
@@ -159,7 +194,7 @@ Each store tracks:
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
 | `--api-key` | `-k` | Gemini API key | `$GEMINI_API_KEY` |
-| `--store` | `-s` | Store name | `default` |
+| `--store` | `-s` | Store name | `$RAGUJUARY_STORE` or `default` |
 | `--data-file` | `-d` | Path to data file | `~/.ragujuary.json` |
 | `--parallelism` | `-p` | Number of parallel uploads | `5` |
 

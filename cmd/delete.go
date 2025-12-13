@@ -58,14 +58,14 @@ func runDelete(cmd *cobra.Command, args []string) error {
 }
 
 func deleteEntireStore(client *gemini.Client) error {
-	// Check if store exists
-	_, err := client.GetFileSearchStore(storeName)
+	// Resolve store name (supports both API name and display name)
+	resolvedName, remoteStore, err := client.ResolveStoreName(storeName)
 	if err != nil {
 		return fmt.Errorf("File Search Store '%s' not found: %w", storeName, err)
 	}
 
 	if !forceDelete {
-		fmt.Printf("Are you sure you want to delete File Search Store '%s' and all its documents? [y/N]: ", storeName)
+		fmt.Printf("Are you sure you want to delete File Search Store '%s' (%s) and all its documents? [y/N]: ", remoteStore.DisplayName, resolvedName)
 		reader := bufio.NewReader(os.Stdin)
 		response, _ := reader.ReadString('\n')
 		response = strings.TrimSpace(strings.ToLower(response))
@@ -75,15 +75,15 @@ func deleteEntireStore(client *gemini.Client) error {
 		}
 	}
 
-	fmt.Printf("Deleting File Search Store '%s'...\n", storeName)
-	if err := client.DeleteFileSearchStore(storeName, true); err != nil {
+	fmt.Printf("Deleting File Search Store '%s' (%s)...\n", remoteStore.DisplayName, resolvedName)
+	if err := client.DeleteFileSearchStore(resolvedName, true); err != nil {
 		return fmt.Errorf("failed to delete store: %w", err)
 	}
 
 	// Remove from local store
 	storeManager, err := store.NewManager(dataFile)
 	if err == nil {
-		storeManager.DeleteStore(storeName)
+		storeManager.DeleteStore(resolvedName)
 		storeManager.Save()
 	}
 

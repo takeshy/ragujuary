@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/takeshy/ragujuary/internal/fileutil"
@@ -37,20 +38,20 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// Create client
 	client := gemini.NewClient(key)
 
-	// Get remote store
-	remoteStore, err := client.GetFileSearchStore(storeName)
+	// Resolve store name (supports both API name and display name)
+	resolvedName, remoteStore, err := client.ResolveStoreName(storeName)
 	if err != nil {
 		return fmt.Errorf("File Search Store '%s' not found: %w", storeName, err)
 	}
 
-	fmt.Printf("Syncing with File Search Store '%s'...\n", remoteStore.DisplayName)
+	fmt.Printf("Syncing with File Search Store '%s' (%s)...\n", remoteStore.DisplayName, resolvedName)
 
 	// Ensure local store exists
-	storeManager.GetOrCreateStore(storeName)
+	storeManager.GetOrCreateStore(resolvedName)
 
 	// Get all remote documents
 	fmt.Println("Fetching remote documents...")
-	remoteDocs, err := client.ListAllDocuments(storeName)
+	remoteDocs, err := client.ListAllDocuments(resolvedName)
 	if err != nil {
 		return fmt.Errorf("failed to list remote documents: %w", err)
 	}
@@ -64,11 +65,37 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get local files
-	localFiles := storeManager.GetAllFiles(storeName)
+	localFiles := storeManager.GetAllFiles(resolvedName)
+	localByPath := make(map[string]store.FileMetadata)
+	for _, f := range localFiles {
+		localByPath[f.LocalPath] = f
+	}
 
 	var removed int
 	var updated int
+	var imported int
 	var orphaned int
+
+	// Import remote documents that don't exist locally
+	for _, doc := range remoteDocs {
+		if _, exists := localByPath[doc.DisplayName]; !exists {
+			// Parse create time
+			uploadedAt, _ := time.Parse(time.RFC3339, doc.CreateTime)
+
+			meta := store.FileMetadata{
+				LocalPath:  doc.DisplayName,
+				RemoteID:   doc.Name,
+				RemoteName: doc.DisplayName,
+				UploadedAt: uploadedAt,
+			}
+			storeManager.AddFile(resolvedName, meta)
+			fmt.Printf("  Imported from remote: %s\n", doc.DisplayName)
+			imported++
+		}
+	}
+
+	// Refresh local files after import
+	localFiles = storeManager.GetAllFiles(resolvedName)
 
 	// Check for files that exist locally but not remotely
 	for _, f := range localFiles {
@@ -77,7 +104,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 			// Also check by remote ID
 			if _, exists := remoteByName[f.RemoteID]; !exists {
 				fmt.Printf("  Removing orphaned entry: %s\n", f.LocalPath)
-				storeManager.RemoveFile(storeName, f.LocalPath)
+				storeManager.RemoveFile(resolvedName, f.LocalPath)
 				removed++
 			}
 		}
@@ -88,17 +115,16 @@ func runSync(cmd *cobra.Command, args []string) error {
 		if doc, exists := remoteByDisplayName[f.LocalPath]; exists {
 			if f.RemoteID != doc.Name {
 				f.RemoteID = doc.Name
-				storeManager.AddFile(storeName, f)
+				storeManager.AddFile(resolvedName, f)
 				updated++
 			}
 		}
 	}
 
 	// Check for files that exist locally but have been deleted from disk
-	localFiles = storeManager.GetAllFiles(storeName) // Refresh after updates
+	localFiles = storeManager.GetAllFiles(resolvedName) // Refresh after updates
 	for _, f := range localFiles {
 		if _, err := os.Stat(f.LocalPath); os.IsNotExist(err) {
-			fmt.Printf("  Local file missing: %s\n", f.LocalPath)
 			orphaned++
 		}
 	}
@@ -110,7 +136,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("\nSync complete:\n")
 	fmt.Printf("  Remote documents: %d\n", len(remoteDocs))
-	fmt.Printf("  Local entries: %d\n", len(storeManager.GetAllFiles(storeName)))
+	fmt.Printf("  Local entries: %d\n", len(storeManager.GetAllFiles(resolvedName)))
+	fmt.Printf("  Imported from remote: %d\n", imported)
 	fmt.Printf("  Removed orphaned entries: %d\n", removed)
 	fmt.Printf("  Updated entries: %d\n", updated)
 	fmt.Printf("  Missing local files: %d\n", orphaned)

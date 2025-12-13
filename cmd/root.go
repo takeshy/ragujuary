@@ -30,8 +30,13 @@ func Execute() {
 }
 
 func init() {
+	defaultStore := "default"
+	if envStore := os.Getenv("RAGUJUARY_STORE"); envStore != "" {
+		defaultStore = envStore
+	}
+
 	rootCmd.PersistentFlags().StringVarP(&apiKey, "api-key", "k", "", "Gemini API key (or set GEMINI_API_KEY env var)")
-	rootCmd.PersistentFlags().StringVarP(&storeName, "store", "s", "default", "Store name")
+	rootCmd.PersistentFlags().StringVarP(&storeName, "store", "s", defaultStore, "Store name (or set RAGUJUARY_STORE env var)")
 	rootCmd.PersistentFlags().StringVarP(&dataFile, "data-file", "d", "", "Path to data file (default: ~/.ragujuary.json)")
 	rootCmd.PersistentFlags().IntVarP(&parallelism, "parallelism", "p", 5, "Number of parallel uploads")
 }

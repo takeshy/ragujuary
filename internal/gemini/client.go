@@ -242,6 +242,38 @@ func (c *Client) ListAllFileSearchStores() ([]FileSearchStore, error) {
 	return allStores, nil
 }
 
+// ResolveStoreName resolves a store name
+// If name contains "fileSearchStores/", treat it as API name
+// Otherwise, search by display name
+// Returns the API store name (without fileSearchStores/ prefix) and the store
+func (c *Client) ResolveStoreName(name string) (string, *FileSearchStore, error) {
+	// If contains prefix, treat as API name
+	if strings.Contains(name, "fileSearchStores/") {
+		apiName := strings.TrimPrefix(name, "fileSearchStores/")
+		store, err := c.GetFileSearchStore(apiName)
+		if err != nil {
+			return "", nil, fmt.Errorf("store '%s' not found: %w", name, err)
+		}
+		storeName := strings.TrimPrefix(store.Name, "fileSearchStores/")
+		return storeName, store, nil
+	}
+
+	// Otherwise, search by display name
+	stores, err := c.ListAllFileSearchStores()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to list stores: %w", err)
+	}
+
+	for _, s := range stores {
+		if s.DisplayName == name {
+			storeName := strings.TrimPrefix(s.Name, "fileSearchStores/")
+			return storeName, &s, nil
+		}
+	}
+
+	return "", nil, fmt.Errorf("store with display name '%s' not found", name)
+}
+
 // DeleteFileSearchStore deletes a File Search Store
 func (c *Client) DeleteFileSearchStore(name string, force bool) error {
 	// Ensure name has prefix
@@ -490,7 +522,7 @@ func (c *Client) ListDocuments(storeName string, pageToken string) (*ListDocumen
 		storeName = "fileSearchStores/" + storeName
 	}
 
-	url := fmt.Sprintf("%s/%s/documents?key=%s&pageSize=100", baseURL, storeName, c.apiKey)
+	url := fmt.Sprintf("%s/%s/documents?key=%s&pageSize=20", baseURL, storeName, c.apiKey)
 	if pageToken != "" {
 		url += "&pageToken=" + pageToken
 	}

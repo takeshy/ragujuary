@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -129,10 +130,19 @@ func (u *Uploader) uploadFile(file fileutil.FileInfo) UploadResult {
 		}
 	}
 
+	// Extract actual document name from operation response
+	documentName := op.Name // Fallback to operation name if parsing fails
+	if op.Done && len(op.Response) > 0 {
+		var doc FileSearchDocument
+		if err := json.Unmarshal(op.Response, &doc); err == nil && doc.Name != "" {
+			documentName = doc.Name
+		}
+	}
+
 	// Create metadata
 	meta := store.FileMetadata{
 		LocalPath:  file.Path,
-		RemoteID:   op.Name, // Store operation name, will be replaced with document name when we list
+		RemoteID:   documentName,
 		RemoteName: file.Path,
 		Checksum:   checksum,
 		Size:       file.Size,

@@ -2,13 +2,16 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/takeshy/ragujuary/internal/gemini"
 )
 
 // handleUpload handles the upload tool
@@ -45,8 +48,44 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 		content = []byte(input.FileContent)
 	}
 
-	// Upload content
-	op, err := s.geminiClient.UploadContentToFileSearchStore(resolvedName, input.FileName, content)
+	// Calculate checksum
+	hash := sha256.Sum256(content)
+	checksum := "sha256:" + hex.EncodeToString(hash[:])
+
+	// Check for existing document with same display name
+	existingDoc, err := s.geminiClient.FindDocumentByDisplayName(resolvedName, input.FileName)
+	if err != nil {
+		// Log error but continue with upload
+		// This is not fatal - we'll just upload the file
+	}
+
+	if existingDoc != nil {
+		// Check if checksum matches
+		existingChecksum := gemini.GetDocumentChecksum(existingDoc)
+		if existingChecksum == checksum {
+			// Same content, skip upload
+			output.Success = true
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Skipped '%s': content unchanged", input.FileName)},
+				},
+			}, output, nil
+		}
+
+		// Different content, delete old document first
+		if err := s.geminiClient.DeleteDocument(existingDoc.Name); err != nil {
+			// Log error but continue with upload
+			// Old document might remain, but new one will be uploaded
+		}
+	}
+
+	// Upload content with checksum metadata
+	checksumPtr := checksum
+	customMetadata := []gemini.CustomMetadata{
+		{Key: "checksum", StringValue: &checksumPtr},
+	}
+
+	op, err := s.geminiClient.UploadContentWithMetadata(resolvedName, input.FileName, content, customMetadata)
 	if err != nil {
 		output.Error = err.Error()
 		return &mcp.CallToolResult{
@@ -70,9 +109,13 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 	}
 
 	output.Success = true
+	message := fmt.Sprintf("Successfully uploaded '%s'", input.FileName)
+	if existingDoc != nil {
+		message = fmt.Sprintf("Successfully updated '%s'", input.FileName)
+	}
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("Successfully uploaded '%s'", input.FileName)},
+			&mcp.TextContent{Text: message},
 		},
 	}, output, nil
 }

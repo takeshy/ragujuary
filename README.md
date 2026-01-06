@@ -187,22 +187,25 @@ Start an MCP (Model Context Protocol) server to expose ragujuary functionality t
 
 #### Transport Options
 
-- **stdio** (default): For local CLI integration
+- **http** (recommended): Streamable HTTP for bidirectional communication
 - **sse**: Server-Sent Events over HTTP for remote connections
-- **http**: Streamable HTTP for bidirectional communication
+- **stdio** (default): For local CLI integration
 
 #### Usage
 
 ```bash
-# Start stdio server (for Claude Desktop)
-ragujuary serve
-
-# Start HTTP/SSE server on port 8080 (with API key authentication)
-ragujuary serve --transport sse --port 8080 --serve-api-key mysecretkey
+# Start HTTP server on port 8080 (recommended for remote access)
+ragujuary serve --transport http --port 8080 --serve-api-key mysecretkey
 
 # Or use environment variable for API key
 export RAGUJUARY_SERVE_API_KEY=mysecretkey
-ragujuary serve --transport sse --port 8080
+ragujuary serve --transport http --port 8080
+
+# Start SSE server (alternative)
+ragujuary serve --transport sse --port 8080 --serve-api-key mysecretkey
+
+# Start stdio server (for Claude Desktop local integration)
+ragujuary serve
 ```
 
 #### Claude Desktop Configuration

@@ -187,22 +187,25 @@ MCP（Model Context Protocol）サーバーを起動し、ragujuary の機能を
 
 #### トランスポートオプション
 
-- **stdio**（デフォルト）: ローカル CLI 連携用
+- **http**（推奨）: 双方向通信用の Streamable HTTP
 - **sse**: HTTP 経由の Server-Sent Events（リモート接続用）
-- **http**: 双方向通信用の Streamable HTTP
+- **stdio**（デフォルト）: ローカル CLI 連携用
 
 #### 使用方法
 
 ```bash
-# stdio サーバーを起動（Claude Desktop 用）
-ragujuary serve
-
-# HTTP/SSE サーバーをポート 8080 で起動（API キー認証付き）
-ragujuary serve --transport sse --port 8080 --serve-api-key mysecretkey
+# HTTP サーバーをポート 8080 で起動（リモートアクセス推奨）
+ragujuary serve --transport http --port 8080 --serve-api-key mysecretkey
 
 # または環境変数で API キーを設定
 export RAGUJUARY_SERVE_API_KEY=mysecretkey
-ragujuary serve --transport sse --port 8080
+ragujuary serve --transport http --port 8080
+
+# SSE サーバーを起動（代替）
+ragujuary serve --transport sse --port 8080 --serve-api-key mysecretkey
+
+# stdio サーバーを起動（Claude Desktop ローカル連携用）
+ragujuary serve
 ```
 
 #### Claude Desktop 設定

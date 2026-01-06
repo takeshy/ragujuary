@@ -418,6 +418,102 @@ func (c *Client) UploadToFileSearchStore(storeName string, filePath string, conf
 	return &operation, nil
 }
 
+// UploadContentToFileSearchStore uploads content directly to a File Search Store
+func (c *Client) UploadContentToFileSearchStore(storeName string, fileName string, content []byte) (*Operation, error) {
+	// Ensure store name has prefix
+	if !strings.HasPrefix(storeName, "fileSearchStores/") {
+		storeName = "fileSearchStores/" + storeName
+	}
+
+	// Detect MIME type from file name
+	mimeType := detectMimeType(fileName)
+
+	// Step 1: Initiate resumable upload
+	initURL := fmt.Sprintf("%s/%s:uploadToFileSearchStore?key=%s", uploadBaseURL, storeName, c.apiKey)
+
+	// Prepare metadata
+	metadata := map[string]interface{}{
+		"displayName": fileName,
+	}
+
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	initReq, err := http.NewRequest("POST", initURL, bytes.NewReader(metadataJSON))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create init request: %w", err)
+	}
+
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("X-Goog-Upload-Protocol", "resumable")
+	initReq.Header.Set("X-Goog-Upload-Command", "start")
+	initReq.Header.Set("X-Goog-Upload-Header-Content-Length", fmt.Sprintf("%d", len(content)))
+	initReq.Header.Set("X-Goog-Upload-Header-Content-Type", mimeType)
+
+	initResp, err := c.httpClient.Do(initReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initiate upload: %w", err)
+	}
+	defer initResp.Body.Close()
+
+	if initResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(initResp.Body)
+		return nil, fmt.Errorf("upload init failed with status %d: %s", initResp.StatusCode, string(body))
+	}
+
+	// Get upload URL from response header
+	uploadURL := initResp.Header.Get("X-Goog-Upload-URL")
+	if uploadURL == "" {
+		body, _ := io.ReadAll(initResp.Body)
+		return nil, fmt.Errorf("no upload URL in response, body: %s", string(body))
+	}
+
+	// Step 2: Upload content
+	uploadReq, err := http.NewRequest("POST", uploadURL, bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create upload request: %w", err)
+	}
+
+	uploadReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(content)))
+	uploadReq.Header.Set("X-Goog-Upload-Offset", "0")
+	uploadReq.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+
+	uploadResp, err := c.httpClient.Do(uploadReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload content: %w", err)
+	}
+	defer uploadResp.Body.Close()
+
+	body, err := io.ReadAll(uploadResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if uploadResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("upload failed with status %d: %s", uploadResp.StatusCode, string(body))
+	}
+
+	var operation Operation
+	if err := json.Unmarshal(body, &operation); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if operation.Name == "" {
+		var doc FileSearchDocument
+		if err := json.Unmarshal(body, &doc); err == nil && doc.Name != "" {
+			return &Operation{
+				Name: doc.Name,
+				Done: true,
+			}, nil
+		}
+		return nil, fmt.Errorf("upload response has empty operation name, raw response: %s", string(body))
+	}
+
+	return &operation, nil
+}
+
 // detectMimeType detects the MIME type of a file based on its extension
 func detectMimeType(filePath string) string {
 	ext := strings.ToLower(filepath.Ext(filePath))

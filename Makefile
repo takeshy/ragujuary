@@ -1,6 +1,6 @@
 BINARY_NAME=ragujuary
 DIST_DIR=dist
-VERSION=0.9.2
+VERSION=0.10.0
 LDFLAGS=-ldflags "-X github.com/takeshy/ragujuary/cmd.Version=$(VERSION)"
 
 .PHONY: all clean build release

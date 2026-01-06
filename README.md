@@ -13,6 +13,7 @@ A CLI tool for managing Gemini File Search Stores - Google's fully managed RAG (
 - List uploaded documents with filtering
 - Sync local metadata with remote state
 - Built-in citations for verifiable responses
+- **MCP Server**: Expose all features to AI assistants (Claude Desktop, Cline, etc.)
 
 ## What is Gemini File Search?
 
@@ -101,7 +102,10 @@ ragujuary upload -s mystore --dry-run ./docs
 # Basic query
 ragujuary query -s mystore "What are the main features?"
 
-# Use a different model (default: gemini-3-pro-preview)
+# Query multiple stores
+ragujuary query --stores store1,store2 "Search across all docs"
+
+# Use a different model (default: gemini-3-flash-preview)
 ragujuary query -s mystore -m gemini-2.5-flash "Explain the architecture"
 
 # Show citation details
@@ -176,6 +180,201 @@ Remove remote documents that no longer exist locally:
 ragujuary clean -s mystore
 ragujuary clean -s mystore -f  # force without confirmation
 ```
+
+### MCP Server
+
+Start an MCP (Model Context Protocol) server to expose ragujuary functionality to AI assistants like Claude Desktop, Cline, etc.
+
+#### Transport Options
+
+- **stdio** (default): For local CLI integration
+- **sse**: Server-Sent Events over HTTP for remote connections
+- **http**: Streamable HTTP for bidirectional communication
+
+#### Usage
+
+```bash
+# Start stdio server (for Claude Desktop)
+ragujuary serve
+
+# Start HTTP/SSE server on port 8080 (with API key authentication)
+ragujuary serve --transport sse --port 8080 --serve-api-key mysecretkey
+
+# Or use environment variable for API key
+export RAGUJUARY_SERVE_API_KEY=mysecretkey
+ragujuary serve --transport sse --port 8080
+```
+
+#### Claude Desktop Configuration
+
+Add to `~/.config/claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "ragujuary": {
+      "command": "/path/to/ragujuary",
+      "args": ["serve"],
+      "env": {
+        "GEMINI_API_KEY": "your-gemini-api-key"
+      }
+    }
+  }
+}
+```
+
+#### Available MCP Tools
+
+The MCP server exposes 7 tools for managing File Search Stores and documents.
+
+##### `upload` - Upload a file to a store
+
+Upload a single file to a Gemini File Search Store. Provide file content directly.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Name of the File Search Store |
+| `file_name` | string | Yes | File name or path for the uploaded file |
+| `file_content` | string | Yes | File content (plain text or base64 encoded) |
+| `is_base64` | boolean | No | Set to true if file_content is base64 encoded (for binary files like PDF, images) |
+
+Example (text file):
+```json
+{
+  "store_name": "my-docs",
+  "file_name": "README.md",
+  "file_content": "# My Document\n\nThis is the content."
+}
+```
+
+Example (binary file):
+```json
+{
+  "store_name": "my-docs",
+  "file_name": "document.pdf",
+  "file_content": "JVBERi0xLjQK...",
+  "is_base64": true
+}
+```
+
+##### `query` - Query documents (RAG)
+
+Query documents using natural language with semantic search.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | No* | Name of the File Search Store |
+| `store_names` | array | No* | Names of multiple File Search Stores to query |
+| `question` | string | Yes | The question to ask about your documents |
+| `model` | string | No | Model to use (default: gemini-3-flash-preview) |
+| `metadata_filter` | string | No | Metadata filter expression |
+| `show_citations` | boolean | No | Include citation details in response |
+
+*Either `store_name` or `store_names` must be provided.
+
+Example (single store):
+```json
+{
+  "store_name": "my-docs",
+  "question": "How does the authentication system work?",
+  "model": "gemini-2.5-flash",
+  "show_citations": true
+}
+```
+
+Example (multiple stores):
+```json
+{
+  "store_names": ["docs-store", "api-store"],
+  "question": "Search across all documentation"
+}
+```
+
+##### `list` - List documents in a store
+
+List all documents in a File Search Store with optional filtering.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Name of the store to list files from |
+| `pattern` | string | No | Regex pattern to filter results |
+
+Example:
+```json
+{
+  "store_name": "my-docs",
+  "pattern": "\\.go$"
+}
+```
+
+##### `delete` - Delete a file from a store
+
+Delete a single file from a File Search Store by file name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Name of the store |
+| `file_name` | string | Yes | File name to delete |
+
+Example:
+```json
+{
+  "store_name": "my-docs",
+  "file_name": "README.md"
+}
+```
+
+##### `create_store` - Create a new store
+
+Create a new File Search Store.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Display name for the new store |
+
+Example:
+```json
+{
+  "store_name": "my-new-store"
+}
+```
+
+##### `delete_store` - Delete a store
+
+Delete an entire File Search Store and all its documents.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Name of the store to delete |
+
+Example:
+```json
+{
+  "store_name": "my-docs"
+}
+```
+
+##### `list_stores` - List all stores
+
+List all available File Search Stores.
+
+No parameters required.
+
+Example:
+```json
+{}
+```
+
+#### HTTP Authentication
+
+For HTTP/SSE transport, set authentication via:
+- `--serve-api-key` flag
+- `RAGUJUARY_SERVE_API_KEY` environment variable
+
+Clients can authenticate using:
+- `X-API-Key` header
+- `Authorization: Bearer <key>` header
+- `api_key` query parameter
 
 ## Data Storage
 

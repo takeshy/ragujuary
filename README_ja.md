@@ -13,6 +13,7 @@ Gemini File Search Stores を管理するためのCLIツール - Googleのフル
 - アップロードされたドキュメントのフィルタリング表示
 - ローカルメタデータとリモート状態の同期
 - 検証可能なレスポンスのための引用機能
+- **MCP サーバー**: AIアシスタント（Claude Desktop、Cline等）に全機能を公開
 
 ## Gemini File Search とは？
 
@@ -101,7 +102,10 @@ ragujuary upload -s mystore --dry-run ./docs
 # 基本的なクエリ
 ragujuary query -s mystore "主な機能は何ですか？"
 
-# 別のモデルを使用（デフォルト: gemini-3-pro-preview）
+# 複数ストアを検索
+ragujuary query --stores store1,store2 "全ドキュメントを横断検索"
+
+# 別のモデルを使用（デフォルト: gemini-3-flash-preview）
 ragujuary query -s mystore -m gemini-2.5-flash "アーキテクチャを説明して"
 
 # 引用の詳細を表示
@@ -176,6 +180,201 @@ sync コマンドの動作：
 ragujuary clean -s mystore
 ragujuary clean -s mystore -f  # 確認なしで強制実行
 ```
+
+### MCP サーバー
+
+MCP（Model Context Protocol）サーバーを起動し、ragujuary の機能を Claude Desktop、Cline などの AI アシスタントに公開します。
+
+#### トランスポートオプション
+
+- **stdio**（デフォルト）: ローカル CLI 連携用
+- **sse**: HTTP 経由の Server-Sent Events（リモート接続用）
+- **http**: 双方向通信用の Streamable HTTP
+
+#### 使用方法
+
+```bash
+# stdio サーバーを起動（Claude Desktop 用）
+ragujuary serve
+
+# HTTP/SSE サーバーをポート 8080 で起動（API キー認証付き）
+ragujuary serve --transport sse --port 8080 --serve-api-key mysecretkey
+
+# または環境変数で API キーを設定
+export RAGUJUARY_SERVE_API_KEY=mysecretkey
+ragujuary serve --transport sse --port 8080
+```
+
+#### Claude Desktop 設定
+
+`~/.config/claude/claude_desktop_config.json` に追加：
+
+```json
+{
+  "mcpServers": {
+    "ragujuary": {
+      "command": "/path/to/ragujuary",
+      "args": ["serve"],
+      "env": {
+        "GEMINI_API_KEY": "your-gemini-api-key"
+      }
+    }
+  }
+}
+```
+
+#### 利用可能な MCP ツール
+
+MCP サーバーは 7 つのツールを公開しています。
+
+##### `upload` - ファイルをストアにアップロード
+
+単一ファイルを Gemini File Search Store にアップロードします。ファイルの内容を直接渡します。
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|------|-------------|
+| `store_name` | string | はい | File Search Store の名前 |
+| `file_name` | string | はい | アップロードするファイル名またはパス |
+| `file_content` | string | はい | ファイルの内容（プレーンテキストまたは base64 エンコード） |
+| `is_base64` | boolean | いいえ | file_content が base64 エンコードの場合は true（PDF、画像などのバイナリファイル用） |
+
+例（テキストファイル）:
+```json
+{
+  "store_name": "my-docs",
+  "file_name": "README.md",
+  "file_content": "# My Document\n\nThis is the content."
+}
+```
+
+例（バイナリファイル）:
+```json
+{
+  "store_name": "my-docs",
+  "file_name": "document.pdf",
+  "file_content": "JVBERi0xLjQK...",
+  "is_base64": true
+}
+```
+
+##### `query` - ドキュメントを検索（RAG）
+
+自然言語でセマンティック検索を実行します。
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|------|-------------|
+| `store_name` | string | いいえ* | File Search Store の名前 |
+| `store_names` | array | いいえ* | 複数の File Search Store の名前 |
+| `question` | string | はい | ドキュメントに対する質問 |
+| `model` | string | いいえ | 使用するモデル（デフォルト: gemini-3-flash-preview） |
+| `metadata_filter` | string | いいえ | メタデータフィルタ式 |
+| `show_citations` | boolean | いいえ | 引用の詳細を含める |
+
+*`store_name` または `store_names` のいずれかが必要です。
+
+例（単一ストア）:
+```json
+{
+  "store_name": "my-docs",
+  "question": "認証システムはどのように機能しますか？",
+  "model": "gemini-2.5-flash",
+  "show_citations": true
+}
+```
+
+例（複数ストア）:
+```json
+{
+  "store_names": ["docs-store", "api-store"],
+  "question": "全ドキュメントを横断検索"
+}
+```
+
+##### `list` - ストア内のドキュメントを一覧表示
+
+File Search Store 内のドキュメントをフィルタリングして一覧表示します。
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|------|-------------|
+| `store_name` | string | はい | ストアの名前 |
+| `pattern` | string | いいえ | 結果をフィルタする正規表現パターン |
+
+例:
+```json
+{
+  "store_name": "my-docs",
+  "pattern": "\\.go$"
+}
+```
+
+##### `delete` - ファイルを削除
+
+ファイル名を指定してストアからファイルを削除します。
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|------|-------------|
+| `store_name` | string | はい | ストアの名前 |
+| `file_name` | string | はい | 削除するファイル名 |
+
+例:
+```json
+{
+  "store_name": "my-docs",
+  "file_name": "README.md"
+}
+```
+
+##### `create_store` - ストアを作成
+
+新しい File Search Store を作成します。
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|------|-------------|
+| `store_name` | string | はい | 新しいストアの表示名 |
+
+例:
+```json
+{
+  "store_name": "my-new-store"
+}
+```
+
+##### `delete_store` - ストアを削除
+
+File Search Store とそのすべてのドキュメントを削除します。
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|------|-------------|
+| `store_name` | string | はい | 削除するストアの名前 |
+
+例:
+```json
+{
+  "store_name": "my-docs"
+}
+```
+
+##### `list_stores` - ストア一覧を取得
+
+利用可能なすべての File Search Store を一覧表示します。
+
+パラメータは不要です。
+
+例:
+```json
+{}
+```
+
+#### HTTP 認証
+
+HTTP/SSE トランスポートの認証設定：
+- `--serve-api-key` フラグ
+- `RAGUJUARY_SERVE_API_KEY` 環境変数
+
+クライアントの認証方法：
+- `X-API-Key` ヘッダー
+- `Authorization: Bearer <key>` ヘッダー
+- `api_key` クエリパラメータ
 
 ## データ保存
 

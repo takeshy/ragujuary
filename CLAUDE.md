@@ -22,7 +22,7 @@ make release
 go run .
 ```
 
-Version is set via LDFLAGS in Makefile (currently 0.10.0).
+Version is set via LDFLAGS in Makefile (currently 0.11.0).
 
 ## Architecture
 

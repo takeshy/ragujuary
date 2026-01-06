@@ -22,19 +22,15 @@ jobs:
         with:
           go-version: '1.23'
 
-      - name: Get tag message
-        id: tag_message
-        run: |
-          TAG_MESSAGE=$(git tag -l --format='%(contents)' ${{ github.ref_name }})
-          echo "message<<EOF" >> $GITHUB_OUTPUT
-          echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Update version in Makefile
         run: |
           VERSION=${{ github.ref_name }}
           VERSION=${VERSION#v}
           sed -i "s/^VERSION=.*/VERSION=${VERSION}/" Makefile
+
+      - name: Get commit title
+        id: commit
+        run: echo "title=$(git log -1 --format='%s')" >> $GITHUB_OUTPUT
 
       - name: Build release binaries
         run: make release
@@ -42,8 +38,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          body: ${{ steps.tag_message.outputs.message }}
+          name: ${{ steps.commit.outputs.title }}
+          draft: true
           files: |
             dist/*
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

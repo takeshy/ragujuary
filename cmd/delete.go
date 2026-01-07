@@ -16,6 +16,7 @@ var (
 	deletePattern string
 	forceDelete   bool
 	deleteStore   bool
+	deleteIDs     []string
 )
 
 var deleteCmd = &cobra.Command{
@@ -24,13 +25,26 @@ var deleteCmd = &cobra.Command{
 	Long: `Delete files from a Gemini File Search Store, or delete the entire store.
 
 Use --pattern to delete files matching a regex pattern.
+Use --id to delete specific documents by their remote ID.
 Use --all to delete the entire File Search Store.
-Use --force to skip confirmation prompts.`,
+Use --force to skip confirmation prompts.
+
+Examples:
+  # Delete files matching pattern
+  ragujuary delete -s mystore -P '\.tmp$'
+
+  # Delete specific documents by ID
+  ragujuary delete -s mystore --id fileSearchStores/xxx/documents/yyy
+  ragujuary delete -s mystore --id doc-id-1 --id doc-id-2
+
+  # Delete entire store
+  ragujuary delete -s mystore --all`,
 	RunE: runDelete,
 }
 
 func init() {
 	deleteCmd.Flags().StringVarP(&deletePattern, "pattern", "P", "", "Regex pattern to match files for deletion")
+	deleteCmd.Flags().StringArrayVar(&deleteIDs, "id", nil, "Document ID(s) to delete (can be specified multiple times)")
 	deleteCmd.Flags().BoolVarP(&forceDelete, "force", "f", false, "Force deletion without confirmation")
 	deleteCmd.Flags().BoolVar(&deleteStore, "all", false, "Delete the entire File Search Store")
 	rootCmd.AddCommand(deleteCmd)
@@ -49,12 +63,101 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return deleteEntireStore(client)
 	}
 
+	// Delete by document IDs
+	if len(deleteIDs) > 0 {
+		return deleteByIDs(client)
+	}
+
 	// Delete files matching pattern
 	if deletePattern == "" {
-		return fmt.Errorf("please specify --pattern to delete files or --store to delete the entire store")
+		return fmt.Errorf("please specify --pattern, --id, or --all")
 	}
 
 	return deleteFilesByPattern(client)
+}
+
+func deleteByIDs(client *gemini.Client) error {
+	// Initialize store manager
+	storeManager, err := store.NewManager(dataFile)
+	if err != nil {
+		return fmt.Errorf("failed to initialize store manager: %w", err)
+	}
+
+	// Resolve store name to get the correct store key
+	resolvedName, _, err := client.ResolveStoreName(storeName)
+	if err != nil {
+		// If store doesn't exist remotely, still try to delete by ID
+		resolvedName = storeName
+	}
+
+	// Build a map of RemoteID -> LocalPath for cache lookup
+	remoteIDToPath := make(map[string]string)
+	for _, f := range storeManager.GetAllFiles(resolvedName) {
+		remoteIDToPath[f.RemoteID] = f.LocalPath
+	}
+
+	// Expand short IDs to full document paths
+	fullIDs := make([]string, len(deleteIDs))
+	for i, id := range deleteIDs {
+		if strings.HasPrefix(id, "fileSearchStores/") {
+			// Already a full path
+			fullIDs[i] = id
+		} else {
+			// Short ID - construct full path
+			fullIDs[i] = fmt.Sprintf("%s/documents/%s", resolvedName, id)
+		}
+	}
+
+	// Show documents to be deleted
+	fmt.Printf("Documents to be deleted:\n")
+	for _, id := range fullIDs {
+		fmt.Printf("  %s\n", id)
+	}
+	fmt.Printf("\nTotal: %d documents\n", len(fullIDs))
+
+	// Confirm deletion
+	if !forceDelete {
+		fmt.Print("\nAre you sure you want to delete these documents? [y/N]: ")
+		reader := bufio.NewReader(os.Stdin)
+		response, _ := reader.ReadString('\n')
+		response = strings.TrimSpace(strings.ToLower(response))
+		if response != "y" && response != "yes" {
+			fmt.Println("Deletion cancelled")
+			return nil
+		}
+	}
+
+	fmt.Println("\nDeleting documents...")
+
+	var deleted, failed int
+	for _, id := range fullIDs {
+		if err := client.DeleteDocument(id); err != nil {
+			fmt.Printf("  ✗ %s: %v\n", id, err)
+			failed++
+		} else {
+			fmt.Printf("  ✓ %s\n", id)
+			deleted++
+
+			// Remove from local cache if exists
+			if localPath, exists := remoteIDToPath[id]; exists {
+				storeManager.RemoveFile(resolvedName, localPath)
+				fmt.Printf("      (removed from local cache: %s)\n", localPath)
+			}
+		}
+	}
+
+	// Save store data
+	if err := storeManager.Save(); err != nil {
+		return fmt.Errorf("failed to save store data: %w", err)
+	}
+
+	fmt.Printf("\nDeleted: %d, Failed: %d\n", deleted, failed)
+
+	if failed > 0 {
+		return fmt.Errorf("some deletions failed")
+	}
+
+	return nil
 }
 
 func deleteEntireStore(client *gemini.Client) error {

@@ -329,8 +329,13 @@ func (c *Client) UploadToFileSearchStore(storeName string, filePath string, conf
 
 	// Prepare metadata
 	metadata := map[string]interface{}{}
-	if config != nil && config.DisplayName != "" {
-		metadata["displayName"] = config.DisplayName
+	if config != nil {
+		if config.DisplayName != "" {
+			metadata["displayName"] = config.DisplayName
+		}
+		if len(config.CustomMetadata) > 0 {
+			metadata["customMetadata"] = config.CustomMetadata
+		}
 	}
 
 	metadataJSON, err := json.Marshal(metadata)

@@ -9,9 +9,11 @@ A CLI tool for managing Gemini File Search Stores - Google's fully managed RAG (
 - Query your documents using natural language (RAG)
 - Parallel uploads (default 5 workers)
 - Checksum-based deduplication (skip unchanged files)
+- Checksum stored in customMetadata for cross-machine sync
 - Delete files or entire stores
 - List uploaded documents with filtering
 - Sync local metadata with remote state
+- Fetch remote metadata for multi-machine workflows
 - Built-in citations for verifiable responses
 - **MCP Server**: Expose all features to AI assistants (Claude Desktop, Cline, etc.)
 
@@ -140,6 +142,10 @@ ragujuary delete -s mystore -P '\.tmp$'
 # Force delete without confirmation
 ragujuary delete -s mystore -P '\.log$' -f
 
+# Delete specific documents by ID (useful for duplicates)
+ragujuary delete -s mystore --id hometakeshyworkjoinshubotdo-mckqpvve11hv
+ragujuary delete -s mystore --id doc-id-1 --id doc-id-2
+
 # Delete an entire store
 ragujuary delete -s mystore --all
 
@@ -171,6 +177,27 @@ The sync command:
 - Imports documents from remote that don't exist locally
 - Removes orphaned local entries that no longer exist on remote
 - Updates local entries with current remote document IDs
+
+### Fetch
+
+Fetch remote document metadata to local cache. Useful for syncing across multiple machines or importing documents uploaded via MCP:
+
+```bash
+# Fetch remote metadata to local cache
+ragujuary fetch -s mystore
+
+# Force update even if local file checksum differs
+ragujuary fetch -s mystore -f
+```
+
+The fetch command:
+- Fetches metadata of all documents from remote store (not the actual files)
+- Compares local file checksums with remote checksums (stored in customMetadata)
+- Updates local cache if checksums match
+- Shows warning and skips if checksums differ (use `--force` to override)
+- Handles files not found on disk with a warning
+
+**Important for multi-machine usage**: When uploading from a different machine, always run `fetch` first to sync the local cache with the remote store. This prevents duplicate documents from being created.
 
 ### Clean
 

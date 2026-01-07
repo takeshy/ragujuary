@@ -109,9 +109,12 @@ func (u *Uploader) uploadFile(file fileutil.FileInfo) UploadResult {
 		}
 	}
 
-	// Create upload config with display name
+	// Create upload config with display name and checksum metadata
 	config := &UploadConfig{
 		DisplayName: file.Path,
+		CustomMetadata: []CustomMetadata{
+			{Key: "checksum", StringValue: &checksum},
+		},
 	}
 
 	// Upload file to File Search Store

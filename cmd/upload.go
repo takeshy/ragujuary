@@ -66,12 +66,25 @@ func runUpload(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("File Search Store '%s' not found. Use --create to create it, or create it manually first", storeName)
 		}
 	}
-	_ = resolvedName // Used for local store name below
-
-	// Ensure local store exists with the remote store name
+	// Use resolved name for local storage key
 	remoteStoreName := remoteStore.Name
-	// Strip prefix for local storage key
 	localStoreName := strings.TrimPrefix(remoteStoreName, "fileSearchStores/")
+
+	// Check if local cache exists when store already exists remotely
+	// If store exists remotely but no local cache, user should run fetch first
+	if !createStore {
+		// Store existed before (not just created)
+		localStore, exists := storeManager.GetStore(localStoreName)
+		if !exists || len(localStore.Files) == 0 {
+			// Check if remote store has any documents
+			docs, err := client.ListAllDocuments(resolvedName)
+			if err == nil && len(docs) > 0 {
+				return fmt.Errorf("remote store '%s' has %d documents but local cache is empty.\nRun 'ragujuary fetch -s %s' first to sync local cache with remote", storeName, len(docs), storeName)
+			}
+		}
+	}
+
+	// Ensure local store exists
 	storeManager.GetOrCreateStore(localStoreName)
 
 	// Discover files

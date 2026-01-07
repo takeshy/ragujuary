@@ -35,6 +35,7 @@ cmd/                       # CLI commands (Cobra framework)
 ├── list.go               # List stores/documents
 ├── delete.go             # Delete files/stores
 ├── sync.go               # Sync local metadata with remote
+├── pull.go               # Pull remote metadata to local cache
 ├── serve.go              # MCP server (stdio/sse/http transports)
 └── ...
 internal/
@@ -58,6 +59,8 @@ internal/
 **Query**: User question → Store name resolution (display name → API name) → Gemini GenerateContent with FileSearch tool → Response with citations
 
 **Sync**: Fetch remote documents → Compare with local cache → Import missing / remove orphaned → Update remote IDs
+
+**Pull**: Fetch all remote documents → Extract checksums from customMetadata → Create/update local cache → Enable multi-machine sync
 
 ## Configuration
 

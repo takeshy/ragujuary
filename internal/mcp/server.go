@@ -6,18 +6,23 @@ import (
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/takeshy/ragujuary/internal/embedding"
 	"github.com/takeshy/ragujuary/internal/gemini"
+	"github.com/takeshy/ragujuary/internal/rag"
 )
 
 // ServerConfig holds configuration for the MCP server
 type ServerConfig struct {
-	APIKey string
+	APIKey      string
+	EmbedURL    string // Optional: OpenAI-compatible embedding URL (e.g. http://localhost:11434 for Ollama)
+	EmbedAPIKey string // Optional: API key for OpenAI-compatible embedding APIs
 }
 
 // Server wraps the MCP server with ragujuary-specific functionality
 type Server struct {
 	mcpServer    *mcp.Server
 	geminiClient *gemini.Client
+	ragEngine    *rag.Engine
 	config       ServerConfig
 }
 
@@ -25,6 +30,15 @@ type Server struct {
 func NewServer(config ServerConfig, version string) (*Server, error) {
 	// Initialize gemini client
 	geminiClient := gemini.NewClient(config.APIKey)
+
+	// Initialize embedding client and RAG engine
+	var embeddingClient embedding.Client
+	if config.EmbedURL != "" {
+		embeddingClient = embedding.NewOpenAIClient(config.EmbedURL, config.EmbedAPIKey)
+	} else {
+		embeddingClient = embedding.NewGeminiClient(config.APIKey)
+	}
+	ragEngine := rag.NewEngine(embeddingClient)
 
 	// Create MCP server
 	mcpServer := mcp.NewServer(&mcp.Implementation{
@@ -35,6 +49,7 @@ func NewServer(config ServerConfig, version string) (*Server, error) {
 	s := &Server{
 		mcpServer:    mcpServer,
 		geminiClient: geminiClient,
+		ragEngine:    ragEngine,
 		config:       config,
 	}
 
@@ -87,6 +102,17 @@ func (s *Server) registerTools() {
 		Name:        "list_stores",
 		Description: "List all available File Search Stores.",
 	}, s.handleListStores)
+
+	// Embedding-based RAG tools
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "embed_index",
+		Description: "Index content using Gemini embeddings for local semantic search. Content is chunked, embedded, and stored locally.",
+	}, s.handleEmbedIndex)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "embed_query",
+		Description: "Query the local embedding store using semantic search. Returns the most similar text chunks with relevance scores.",
+	}, s.handleEmbedQuery)
 }
 
 // RunStdio runs the server using stdio transport

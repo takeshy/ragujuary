@@ -14,9 +14,11 @@ import (
 )
 
 var (
-	serveTransport string
-	servePort      int
-	serveAPIKey    string
+	serveTransport   string
+	servePort        int
+	serveAPIKey      string
+	serveEmbedURL    string
+	serveEmbedAPIKey string
 )
 
 var serveCmd = &cobra.Command{
@@ -60,6 +62,8 @@ func init() {
 	serveCmd.Flags().StringVar(&serveTransport, "transport", "stdio", "Transport type: stdio, sse, or http")
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "Port for HTTP/SSE server")
 	serveCmd.Flags().StringVar(&serveAPIKey, "serve-api-key", "", "API key for HTTP authentication (or RAGUJUARY_SERVE_API_KEY env var)")
+	serveCmd.Flags().StringVar(&serveEmbedURL, "embed-url", "", "OpenAI-compatible embedding API URL (e.g. http://localhost:11434 for Ollama)")
+	serveCmd.Flags().StringVar(&serveEmbedAPIKey, "embed-api-key", "", "API key for OpenAI-compatible embedding APIs (or set RAGUJUARY_EMBED_API_KEY / OPENAI_API_KEY)")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -72,7 +76,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Create MCP server config
 	config := mcpserver.ServerConfig{
-		APIKey: key,
+		APIKey:      key,
+		EmbedURL:    serveEmbedURL,
+		EmbedAPIKey: getServeEmbeddingAPIKey(),
 	}
 
 	// Create MCP server
@@ -106,6 +112,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("unknown transport: %s (must be stdio, sse, or http)", serveTransport)
 	}
+}
+
+func getServeEmbeddingAPIKey() string {
+	if serveEmbedAPIKey != "" {
+		return serveEmbedAPIKey
+	}
+	if key := os.Getenv("RAGUJUARY_EMBED_API_KEY"); key != "" {
+		return key
+	}
+	return os.Getenv("OPENAI_API_KEY")
 }
 
 func runHTTPServerWithShutdown(handler http.Handler, transportName string, sigChan chan os.Signal) error {

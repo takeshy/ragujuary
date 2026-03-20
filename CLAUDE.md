@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Ragujuary is a CLI tool and MCP server for managing Google's Gemini File Search Stores - a fully managed RAG (Retrieval-Augmented Generation) system. It enables uploading documents, semantic search queries with citations, and exposes functionality to AI assistants via MCP protocol.
+Ragujuary is a CLI tool and MCP server for RAG (Retrieval-Augmented Generation) using Google's Gemini APIs. It supports two RAG modes:
+
+1. **FileSearch mode** - Managed RAG using Gemini File Search Stores (server-side retrieval with citations)
+2. **Embedding mode** - Self-managed RAG using Gemini Embedding API (local vector storage with cosine similarity search)
 
 ## Build Commands
 
@@ -22,7 +25,7 @@ make release
 go run .
 ```
 
-Version is set via LDFLAGS in Makefile (currently 0.11.0).
+Version is set via LDFLAGS in Makefile (currently 0.12.0).
 
 ## Architecture
 
@@ -37,18 +40,27 @@ cmd/                       # CLI commands (Cobra framework)
 ├── sync.go               # Sync local metadata with remote
 ├── pull.go               # Pull remote metadata to local cache
 ├── serve.go              # MCP server (stdio/sse/http transports)
+├── embed.go              # Embedding-based RAG commands (index/query/list/delete/clear)
 └── ...
 internal/
 ├── gemini/               # Gemini File Search API client
 │   ├── client.go         # Store/document CRUD, RAG queries, resumable uploads
 │   └── uploader.go       # Parallel upload worker pool
+├── embedding/            # Gemini Embedding API client
+│   └── client.go         # EmbedContent, BatchEmbedContents
+├── rag/                  # Embedding-based RAG engine
+│   ├── chunker.go        # Smart text chunking (paragraph/sentence boundaries, JP support)
+│   ├── store.go          # Local vector storage (JSON metadata + binary vectors)
+│   ├── search.go         # Cosine similarity search
+│   └── engine.go         # RAG pipeline orchestration (index, query, delete)
 ├── store/                # Local metadata persistence (~/.ragujuary.json)
 │   ├── manager.go        # Thread-safe store operations (RWMutex)
 │   └── types.go          # StoreData, Store, FileMetadata types
 ├── fileutil/             # File discovery, checksum calculation
 └── mcp/                  # MCP server implementation
-    ├── server.go         # Server setup, tool registration
-    ├── handlers.go       # Tool handlers
+    ├── server.go         # Server setup, tool registration (FileSearch + Embed)
+    ├── handlers.go       # Tool handlers (FileSearch + Embed)
+    ├── tools.go          # Tool input/output types
     └── middleware.go     # API key authentication
 ```
 
@@ -62,6 +74,10 @@ internal/
 
 **Pull**: Fetch all remote documents → Extract checksums from customMetadata → Create/update local cache → Enable multi-machine sync
 
+**Embed Index**: CLI → File discovery with regex filtering → SHA256 checksum for incremental updates → Smart text chunking (paragraph/sentence boundaries) → Batch embedding via Gemini Embedding API → Merge unchanged + new vectors → Save to local binary store
+
+**Embed Query**: User question → Embed with RETRIEVAL_QUERY task type → Load local index + vectors → Cosine similarity search → Top-K results with scores
+
 ## Configuration
 
 Environment variables:
@@ -70,6 +86,7 @@ Environment variables:
 - `RAGUJUARY_SERVE_API_KEY` - MCP server authentication
 
 Local metadata: `~/.ragujuary.json` (JSON with stores, files, checksums, timestamps)
+Embedding stores: `~/.ragujuary-embed/<store-name>/` (index.json + vectors.bin)
 
 ## Dependencies
 
@@ -78,10 +95,19 @@ Local metadata: `~/.ragujuary.json` (JSON with stores, files, checksums, timesta
 
 ## API Integration
 
+### FileSearch API
 - Base URL: `https://generativelanguage.googleapis.com/v1beta`
 - Upload URL: `https://generativelanguage.googleapis.com/upload/v1beta`
 - Authentication: Query parameter `?key=<GEMINI_API_KEY>`
 - Uses Google's resumable upload protocol for reliability
+
+### Embedding API
+- Endpoint: `POST /v1beta/models/{model}:embedContent` (single)
+- Batch: `POST /v1beta/models/{model}:batchEmbedContents`
+- Default model: `gemini-embedding-2-preview` (multimodal, 8192 tokens)
+- Task types: `RETRIEVAL_DOCUMENT` (indexing), `RETRIEVAL_QUERY` (searching), `SEMANTIC_SIMILARITY`, etc.
+- Output dimensions: 128-3072 (default: 768)
+- Embedding spaces between models are NOT compatible (must re-index when changing model)
 
 ## Gemini File Search API Constraints
 
@@ -118,3 +144,16 @@ Local metadata: `~/.ragujuary.json` (JSON with stores, files, checksums, timesta
    - Match → Skip upload
    - Differ → Delete old document → Upload new
 4. If not found: Upload with checksum in customMetadata
+
+## FileSearch vs Embedding Mode
+
+| Feature | FileSearch (managed) | Embedding (local) |
+|---------|---------------------|-------------------|
+| Storage | Gemini Cloud | Local (~/.ragujuary-embed/) |
+| Retrieval | Server-side with citations | Cosine similarity search |
+| Chunking | Gemini automatic | Custom (paragraph/sentence-aware) |
+| Query | GenerateContent + FileSearch tool | Embed query + vector search |
+| CLI commands | upload/query/list/delete | embed index/query/list/delete/clear |
+| MCP tools | upload/query/list/delete/create_store/delete_store/list_stores | embed_index/embed_query |
+| Incremental | SHA256 checksum | SHA256 checksum |
+| Model change | N/A | Requires full re-index |

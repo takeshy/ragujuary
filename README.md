@@ -1,20 +1,30 @@
 # ragujuary
 
-A CLI tool for managing Gemini File Search Stores - Google's fully managed RAG (Retrieval-Augmented Generation) system.
+A CLI tool and MCP server for RAG (Retrieval-Augmented Generation) using Google's Gemini APIs.
 
 ## Features
 
+### Two RAG Modes
+
+**FileSearch Mode** (Managed RAG):
 - Create and manage Gemini File Search Stores
-- Upload files from multiple directories with automatic chunking and embedding
-- Query your documents using natural language (RAG)
+- Upload files with automatic server-side chunking and embedding
+- Query documents using natural language with built-in citations
 - Parallel uploads (default 5 workers)
 - Checksum-based deduplication (skip unchanged files)
 - Checksum stored in customMetadata for cross-machine sync
+- Sync/fetch for multi-machine workflows
+
+**Embedding Mode** (Local RAG):
+- Index files using Gemini Embedding API (`gemini-embedding-2-preview`)
+- Local vector storage with cosine similarity search
+- Smart text chunking (paragraph/sentence-aware, Japanese supported)
+- Incremental indexing (only re-embeds changed files)
+- Configurable chunk size, overlap, top-K, and min-score
+
+### Common
 - Delete files or entire stores
-- List uploaded documents with filtering
-- Sync local metadata with remote state
-- Fetch remote metadata for multi-machine workflows
-- Built-in citations for verifiable responses
+- List uploaded/indexed documents with filtering
 - **MCP Server**: Expose all features to AI assistants (Claude Desktop, Cline, etc.)
 
 ## What is Gemini File Search?
@@ -26,6 +36,15 @@ Gemini File Search is a fully managed RAG system built into the Gemini API. Unli
 - Provide semantic search over your content
 - Support a wide range of formats (PDF, DOCX, TXT, JSON, code files, etc.)
 - Include citations in responses for verification
+
+## What is Gemini Embedding?
+
+The Gemini Embedding API generates vector representations of text, enabling custom semantic search:
+
+- Model: `gemini-embedding-2-preview` (multimodal, 8192 tokens)
+- Task types optimized for retrieval: `RETRIEVAL_DOCUMENT` (indexing), `RETRIEVAL_QUERY` (searching)
+- Configurable output dimensions (128-3072, default 768)
+- Batch embedding support for efficient indexing
 
 ## Installation
 
@@ -79,7 +98,9 @@ ragujuary list --stores
 
 ## Usage
 
-### Create a store and upload files
+### FileSearch Mode
+
+#### Create a store and upload files
 
 ```bash
 # Create a store and upload files
@@ -98,7 +119,7 @@ ragujuary upload -s mystore -p 10 ./large-project
 ragujuary upload -s mystore --dry-run ./docs
 ```
 
-### Query your documents (RAG)
+#### Query your documents (RAG)
 
 ```bash
 # Basic query
@@ -114,7 +135,7 @@ ragujuary query -s mystore -m gemini-2.5-flash "Explain the architecture"
 ragujuary query -s mystore --citations "How does authentication work?"
 ```
 
-### List stores and files
+#### List stores and files
 
 ```bash
 # List all File Search Stores
@@ -133,7 +154,7 @@ ragujuary list -s mystore -P '\.go$'
 ragujuary list -s mystore -l --remote
 ```
 
-### Delete files or stores
+#### Delete files or stores
 
 ```bash
 # Delete files matching pattern
@@ -153,7 +174,7 @@ ragujuary delete -s mystore --all
 ragujuary delete -s mystore --all -f
 ```
 
-### Status
+#### Status
 
 Check status of files (modified, unchanged, missing):
 
@@ -161,7 +182,7 @@ Check status of files (modified, unchanged, missing):
 ragujuary status -s mystore
 ```
 
-### Sync
+#### Sync
 
 Sync local metadata with remote state. This imports remote documents into the local cache:
 
@@ -178,7 +199,7 @@ The sync command:
 - Removes orphaned local entries that no longer exist on remote
 - Updates local entries with current remote document IDs
 
-### Fetch
+#### Fetch
 
 Fetch remote document metadata to local cache. Useful for syncing across multiple machines or importing documents uploaded via MCP:
 
@@ -199,13 +220,66 @@ The fetch command:
 
 **Important for multi-machine usage**: When uploading from a different machine, always run `fetch` first to sync the local cache with the remote store. This prevents duplicate documents from being created.
 
-### Clean
+#### Clean
 
 Remove remote documents that no longer exist locally:
 
 ```bash
 ragujuary clean -s mystore
 ragujuary clean -s mystore -f  # force without confirmation
+```
+
+### Embedding Mode
+
+#### Index files
+
+```bash
+# Index files from directories
+ragujuary embed index -s mystore ./docs
+
+# Index from multiple directories with exclusions
+ragujuary embed index -s mystore -e '\.git' -e 'node_modules' ./project ./docs
+
+# Custom chunking parameters
+ragujuary embed index -s mystore --chunk-size 500 --chunk-overlap 100 ./docs
+
+# Use a different model/dimension
+ragujuary embed index -s mystore --model gemini-embedding-2-preview --dimension 1536 ./docs
+```
+
+Indexing is incremental: only files with changed checksums are re-embedded.
+
+#### Query the embedding store
+
+```bash
+# Semantic search
+ragujuary embed query -s mystore "How does authentication work?"
+
+# Customize results
+ragujuary embed query -s mystore --top-k 10 --min-score 0.5 "error handling patterns"
+```
+
+#### List indexed files
+
+```bash
+# List all embedding stores
+ragujuary embed list --stores
+
+# List files in a specific store
+ragujuary embed list -s mystore
+```
+
+#### Delete files from index
+
+```bash
+# Delete files matching a pattern
+ragujuary embed delete -s mystore -P '\.tmp$'
+```
+
+#### Clear an entire store
+
+```bash
+ragujuary embed clear -s mystore
 ```
 
 ### MCP Server
@@ -255,7 +329,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 #### Available MCP Tools
 
-The MCP server exposes 7 tools for managing File Search Stores and documents.
+The MCP server exposes 9 tools: 7 for FileSearch mode and 2 for Embedding mode.
 
 ##### `upload` - Upload a file to a store
 
@@ -395,6 +469,50 @@ Example:
 {}
 ```
 
+##### `embed_index` - Index content with embeddings
+
+Index text content using Gemini Embedding API for local semantic search.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Name of the embedding store |
+| `file_name` | string | Yes | File name or identifier |
+| `file_content` | string | Yes | Text content to index |
+| `model` | string | No | Embedding model (default: gemini-embedding-2-preview) |
+| `chunk_size` | integer | No | Chunk size in characters (default: 1000) |
+| `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200) |
+| `dimension` | integer | No | Embedding dimensionality (default: 768) |
+
+Example:
+```json
+{
+  "store_name": "my-docs",
+  "file_name": "notes.md",
+  "file_content": "# Meeting Notes\n\nDiscussed the new authentication system..."
+}
+```
+
+##### `embed_query` - Search embeddings
+
+Query the local embedding store using semantic search.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Name of the embedding store |
+| `question` | string | Yes | The question to search for |
+| `top_k` | integer | No | Number of top results (default: 5) |
+| `min_score` | number | No | Minimum similarity score (default: 0.3) |
+| `model` | string | No | Embedding model (default: gemini-embedding-2-preview) |
+
+Example:
+```json
+{
+  "store_name": "my-docs",
+  "question": "What was discussed about authentication?",
+  "top_k": 3
+}
+```
+
 #### HTTP Authentication
 
 For HTTP/SSE transport, set authentication via:
@@ -408,6 +526,7 @@ Clients can authenticate using:
 
 ## Data Storage
 
+### FileSearch Mode
 File metadata is stored in `~/.ragujuary.json` by default. Use `--data-file` to specify a different location.
 
 Each store tracks:
@@ -417,6 +536,11 @@ Each store tracks:
 - File size
 - Upload timestamp
 - MIME type
+
+### Embedding Mode
+Embedding stores are saved in `~/.ragujuary-embed/<store-name>/`:
+- `index.json` - Chunk metadata, file checksums, embedding model, dimension
+- `vectors.bin` - Float32 vector data (binary)
 
 ## Global Flags
 

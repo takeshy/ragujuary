@@ -17,10 +17,13 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:     "ragujuary",
-	Short:   "Gemini File Search CLI tool",
+	Short:   "Gemini RAG CLI tool (FileSearch + Embedding)",
 	Version: Version,
-	Long: `ragujuary is a CLI tool for managing files in Gemini File Search.
-It allows you to upload, list, and delete files from named stores.`,
+	Long: `ragujuary is a CLI tool for RAG (Retrieval-Augmented Generation) using Gemini APIs.
+
+Modes:
+  FileSearch: Managed RAG using Gemini File Search Stores (upload, query, list, delete)
+  Embedding:  Local RAG using Gemini Embedding API (embed index, embed query, embed list)`,
 }
 
 // Execute runs the root command

@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/takeshy/ragujuary/internal/gemini"
+	"github.com/takeshy/ragujuary/internal/rag"
 )
 
 // handleUpload handles the upload tool
@@ -413,6 +414,116 @@ func (s *Server) handleListStores(ctx context.Context, req *mcp.CallToolRequest,
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: fmt.Sprintf("Found %d stores", output.Total)},
+		},
+	}, output, nil
+}
+
+// handleEmbedIndex handles the embed_index tool
+func (s *Server) handleEmbedIndex(ctx context.Context, req *mcp.CallToolRequest, input EmbedIndexInput) (*mcp.CallToolResult, EmbedIndexOutput, error) {
+	output := EmbedIndexOutput{FileName: input.FileName}
+
+	if input.FileName == "" {
+		return nil, output, fmt.Errorf("file_name is required")
+	}
+	if input.FileContent == "" {
+		return nil, output, fmt.Errorf("file_content is required")
+	}
+
+	storeName, err := s.getStoreName(input.StoreName)
+	if err != nil {
+		return nil, output, err
+	}
+
+	config := rag.DefaultConfig()
+	if input.Model != "" {
+		config.Model = input.Model
+	}
+	if input.ChunkSize > 0 {
+		config.ChunkSize = input.ChunkSize
+	}
+	if input.ChunkOverlap > 0 {
+		config.ChunkOverlap = input.ChunkOverlap
+	}
+	if input.Dimension > 0 {
+		config.Dimension = input.Dimension
+	}
+
+	if err := s.ragEngine.IndexContent(storeName, input.FileName, input.FileContent, config); err != nil {
+		output.Error = err.Error()
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
+			},
+		}, output, nil
+	}
+
+	// Count chunks for output
+	chunks := rag.ChunkText(input.FileContent, config.ChunkSize, config.ChunkOverlap)
+	output.Success = true
+	output.Chunks = len(chunks)
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf("Successfully indexed '%s' (%d chunks)", input.FileName, output.Chunks)},
+		},
+	}, output, nil
+}
+
+// handleEmbedQuery handles the embed_query tool
+func (s *Server) handleEmbedQuery(ctx context.Context, req *mcp.CallToolRequest, input EmbedQueryInput) (*mcp.CallToolResult, EmbedQueryOutput, error) {
+	output := EmbedQueryOutput{Results: []EmbedSearchResult{}}
+
+	if input.Question == "" {
+		return nil, output, fmt.Errorf("question is required")
+	}
+
+	storeName, err := s.getStoreName(input.StoreName)
+	if err != nil {
+		return nil, output, err
+	}
+
+	config := rag.DefaultConfig()
+	if input.Model != "" {
+		config.Model = input.Model
+	}
+	if input.TopK > 0 {
+		config.TopK = input.TopK
+	}
+	if input.MinScore > 0 {
+		config.MinScore = input.MinScore
+	}
+
+	results, err := s.ragEngine.Query(input.Question, storeName, config)
+	if err != nil {
+		return nil, output, fmt.Errorf("embed query failed: %w", err)
+	}
+
+	var textBuilder strings.Builder
+	for _, r := range results {
+		output.Results = append(output.Results, EmbedSearchResult{
+			Text:     r.Text,
+			FilePath: r.FilePath,
+			Score:    r.Score,
+		})
+		text := r.Text
+		if len(text) > 300 {
+			text = text[:300] + "..."
+		}
+		textBuilder.WriteString(fmt.Sprintf("[%.4f] %s: %s\n\n", r.Score, r.FilePath, text))
+	}
+	output.Total = len(output.Results)
+
+	if output.Total == 0 {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: "No results found."},
+			},
+		}, output, nil
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: textBuilder.String()},
 		},
 	}, output, nil
 }

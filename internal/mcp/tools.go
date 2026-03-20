@@ -112,3 +112,44 @@ type StoreInfo struct {
 	CreateTime  string `json:"create_time,omitempty"`
 	UpdateTime  string `json:"update_time,omitempty"`
 }
+
+// EmbedIndexInput represents input for the embed_index tool
+type EmbedIndexInput struct {
+	StoreName    string `json:"store_name" jsonschema:"name of the embedding store"`
+	FileName     string `json:"file_name" jsonschema:"file name or identifier for the content"`
+	FileContent  string `json:"file_content" jsonschema:"text content to index"`
+	Model        string `json:"model,omitempty" jsonschema:"embedding model (default: gemini-embedding-2-preview)"`
+	ChunkSize    int    `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000)"`
+	ChunkOverlap int    `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200)"`
+	Dimension    int    `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768)"`
+}
+
+// EmbedIndexOutput represents output from the embed_index tool
+type EmbedIndexOutput struct {
+	Success  bool   `json:"success"`
+	FileName string `json:"file_name"`
+	Chunks   int    `json:"chunks"`
+	Error    string `json:"error,omitempty"`
+}
+
+// EmbedQueryInput represents input for the embed_query tool
+type EmbedQueryInput struct {
+	Question  string  `json:"question" jsonschema:"the question to search for"`
+	StoreName string  `json:"store_name" jsonschema:"name of the embedding store"`
+	TopK      int     `json:"top_k,omitempty" jsonschema:"number of top results (default: 5)"`
+	MinScore  float64 `json:"min_score,omitempty" jsonschema:"minimum similarity score (default: 0.3)"`
+	Model     string  `json:"model,omitempty" jsonschema:"embedding model (default: gemini-embedding-2-preview)"`
+}
+
+// EmbedQueryOutput represents output from the embed_query tool
+type EmbedQueryOutput struct {
+	Results []EmbedSearchResult `json:"results"`
+	Total   int                 `json:"total"`
+}
+
+// EmbedSearchResult represents a single embedding search result
+type EmbedSearchResult struct {
+	Text     string  `json:"text"`
+	FilePath string  `json:"file_path"`
+	Score    float64 `json:"score"`
+}

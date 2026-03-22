@@ -200,7 +200,11 @@ func runEmbedQuery(cmd *cobra.Command, args []string) error {
 		if r.ContentType != "" {
 			typeLabel = fmt.Sprintf(" [%s]", r.ContentType)
 		}
-		fmt.Printf("--- Result %d (score: %.4f, file: %s%s) ---\n", i+1, r.Score, r.FilePath, typeLabel)
+		pageInfo := ""
+		if r.PageLabel != "" {
+			pageInfo = fmt.Sprintf(", %s", r.PageLabel)
+		}
+		fmt.Printf("--- Result %d (score: %.4f, file: %s%s%s) ---\n", i+1, r.Score, r.FilePath, typeLabel, pageInfo)
 		text := r.Text
 		if len(text) > 500 {
 			text = text[:500] + "..."

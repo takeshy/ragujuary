@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/takeshy/ragujuary/internal/embedding"
 	"github.com/takeshy/ragujuary/internal/fileutil"
+	"github.com/takeshy/ragujuary/internal/mediautil"
+	"github.com/takeshy/ragujuary/internal/pdfutil"
 )
 
 const defaultBatchSize = 32
@@ -68,6 +71,9 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		return &IndexResult{}, nil
 	}
 
+	// Check multimodal support
+	_, supportsMultimodal := e.embeddingClient.(embedding.MultimodalEmbedder)
+
 	// Compute checksums, classify files
 	newChecksums := make(map[string]string)
 	fileContents := make(map[string]string) // text files only
@@ -87,6 +93,21 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 				return nil, fmt.Errorf("failed to read file %s: %w", f.Path, err)
 			}
 			fileContents[f.Path] = string(content)
+		} else if ct == "pdf" && !supportsMultimodal {
+			// Extract text from PDF for text-only backends
+			data, err := os.ReadFile(f.Path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to read %s: %v\n", f.Path, err)
+				continue
+			}
+			text, err := pdfutil.ExtractAllText(data)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to extract text from %s: %v\n", f.Path, err)
+				continue
+			}
+			if text != "" {
+				fileContents[f.Path] = text
+			}
 		}
 	}
 
@@ -152,7 +173,12 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		fi := fileInfoMap[filePath]
 		ct := fileutil.ClassifyContent(fi.MimeType)
 		if fileutil.IsMultimodal(ct) {
-			multimodalFileInfos = append(multimodalFileInfos, fi)
+			// PDFs with extracted text go to text pipeline
+			if _, hasText := fileContents[filePath]; hasText {
+				textFiles = append(textFiles, filePath)
+			} else {
+				multimodalFileInfos = append(multimodalFileInfos, fi)
+			}
 		} else {
 			textFiles = append(textFiles, filePath)
 		}
@@ -206,8 +232,23 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		newMeta = append(newMeta, allMetas...)
 	}
 
-	// Embed multimodal files (one at a time, no chunking)
-	mmClient, supportsMultimodal := e.embeddingClient.(embedding.MultimodalEmbedder)
+	// Check ffmpeg availability if there are audio/video files
+	hasMediaFiles := false
+	for _, fi := range multimodalFileInfos {
+		ct := fileutil.ClassifyContent(fi.MimeType)
+		if ct == "audio" || ct == "video" {
+			hasMediaFiles = true
+			break
+		}
+	}
+	if hasMediaFiles {
+		if err := mediautil.CheckFFmpeg(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Embed multimodal files (split PDFs by pages, audio/video by duration)
+	mmClient, _ := e.embeddingClient.(embedding.MultimodalEmbedder)
 	for _, fi := range multimodalFileInfos {
 		if !supportsMultimodal {
 			fmt.Fprintf(os.Stderr, "Warning: skipping %s (backend does not support multimodal embedding)\n", fi.Path)
@@ -230,6 +271,150 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 			continue
 		}
 
+		ct := fileutil.ClassifyContent(fi.MimeType)
+
+		// PDF: split into page chunks to stay within Gemini's 6-page limit
+		if fi.MimeType == "application/pdf" {
+			chunks, err := pdfutil.SplitPages(data, pdfutil.DefaultMaxPages)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to split PDF %s: %v\n", fi.Path, err)
+				delete(finalChecksums, fi.Path)
+				result.SkippedMultimodal++
+				continue
+			}
+
+			embedded := 0
+			for _, chunk := range chunks {
+				vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+					MIMEType: fi.MimeType,
+					Data:     chunk.Data,
+				}, embedding.TaskRetrievalDocument, config.Dimension)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to embed %s (pages %d-%d): %v\n", fi.Path, chunk.StartPage, chunk.EndPage, err)
+					continue
+				}
+
+				pageLabel := fmt.Sprintf("pages %d-%d of %d", chunk.StartPage, chunk.EndPage, chunk.TotalPages)
+				newMeta = append(newMeta, ChunkMeta{
+					FilePath:    fi.Path,
+					StartOffset: 0,
+					Text:        fmt.Sprintf("[%s: %s (%s)]", ct, filepath.Base(fi.Path), pageLabel),
+					ContentType: ct,
+					MIMEType:    fi.MimeType,
+					PageLabel:   pageLabel,
+				})
+				newVecs = append(newVecs, vec)
+				embedded++
+			}
+
+			if embedded > 0 {
+				result.MultimodalFiles++
+				finalChecksums[fi.Path] = newChecksums[fi.Path]
+			} else {
+				delete(finalChecksums, fi.Path)
+				result.SkippedMultimodal++
+			}
+			continue
+		}
+
+		// Audio/Video: split by duration if exceeding Gemini limits
+		if ct == "audio" || ct == "video" {
+			needsSplit, _, _, maxDur, probeErr := mediautil.NeedsSplit(fi.Path, fi.MimeType)
+			if probeErr != nil {
+				// Can't probe — try single embedding with the raw data
+				vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+					MIMEType: fi.MimeType,
+					Data:     data,
+				}, embedding.TaskRetrievalDocument, config.Dimension)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to embed %s: %v\n", fi.Path, err)
+					delete(finalChecksums, fi.Path)
+					result.SkippedMultimodal++
+					continue
+				}
+				newMeta = append(newMeta, ChunkMeta{
+					FilePath:    fi.Path,
+					StartOffset: 0,
+					Text:        fmt.Sprintf("[%s: %s]", ct, filepath.Base(fi.Path)),
+					ContentType: ct,
+					MIMEType:    fi.MimeType,
+				})
+				newVecs = append(newVecs, vec)
+				result.MultimodalFiles++
+				finalChecksums[fi.Path] = newChecksums[fi.Path]
+				continue
+			}
+
+			if !needsSplit {
+				// Short enough — embed directly
+				vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+					MIMEType: fi.MimeType,
+					Data:     data,
+				}, embedding.TaskRetrievalDocument, config.Dimension)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to embed %s: %v\n", fi.Path, err)
+					delete(finalChecksums, fi.Path)
+					result.SkippedMultimodal++
+					continue
+				}
+				newMeta = append(newMeta, ChunkMeta{
+					FilePath:    fi.Path,
+					StartOffset: 0,
+					Text:        fmt.Sprintf("[%s: %s]", ct, filepath.Base(fi.Path)),
+					ContentType: ct,
+					MIMEType:    fi.MimeType,
+				})
+				newVecs = append(newVecs, vec)
+				result.MultimodalFiles++
+				finalChecksums[fi.Path] = newChecksums[fi.Path]
+				continue
+			}
+
+			// Split and embed each segment
+			segments, err := mediautil.SplitMedia(fi.Path, fi.MimeType, maxDur)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to split %s: %v\n", fi.Path, err)
+				delete(finalChecksums, fi.Path)
+				result.SkippedMultimodal++
+				continue
+			}
+
+			embedded := 0
+			for _, seg := range segments {
+				vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+					MIMEType: fi.MimeType,
+					Data:     seg.Data,
+				}, embedding.TaskRetrievalDocument, config.Dimension)
+				if err != nil {
+					timeLabel := mediautil.FormatTimeLabel(seg.StartSec, seg.EndSec, seg.TotalSec)
+					fmt.Fprintf(os.Stderr, "Warning: failed to embed %s (%s): %v\n", fi.Path, timeLabel, err)
+					continue
+				}
+
+				timeLabel := mediautil.FormatTimeLabel(seg.StartSec, seg.EndSec, seg.TotalSec)
+				newMeta = append(newMeta, ChunkMeta{
+					FilePath:    fi.Path,
+					StartOffset: 0,
+					Text:        fmt.Sprintf("[%s: %s (%s)]", ct, filepath.Base(fi.Path), timeLabel),
+					ContentType: ct,
+					MIMEType:    fi.MimeType,
+					PageLabel:   timeLabel,
+				})
+				newVecs = append(newVecs, vec)
+				embedded++
+			}
+
+			if embedded > 0 {
+				result.MultimodalFiles++
+				finalChecksums[fi.Path] = newChecksums[fi.Path]
+			} else {
+				delete(finalChecksums, fi.Path)
+				result.SkippedMultimodal++
+			}
+			continue
+		}
+
+		// Image and other multimodal: single embedding
 		vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
 			MIMEType: fi.MimeType,
 			Data:     data,
@@ -241,7 +426,6 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 			continue
 		}
 
-		ct := fileutil.ClassifyContent(fi.MimeType)
 		newMeta = append(newMeta, ChunkMeta{
 			FilePath:    fi.Path,
 			StartOffset: 0,
@@ -436,24 +620,117 @@ func (e *Engine) IndexMultimodalContent(storeName, fileName string, data []byte,
 		}
 	}
 
-	// Embed multimodal content (single embedding, no chunking)
-	vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
-		MIMEType: mimeType,
-		Data:     data,
-	}, embedding.TaskRetrievalDocument, config.Dimension)
-	if err != nil {
-		return fmt.Errorf("failed to embed multimodal content: %w", err)
-	}
-
 	ct := fileutil.ClassifyContent(mimeType)
-	allMeta = append(allMeta, ChunkMeta{
-		FilePath:    fileName,
-		StartOffset: 0,
-		Text:        fmt.Sprintf("[%s: %s]", ct, fileName),
-		ContentType: ct,
-		MIMEType:    mimeType,
-	})
-	allVecs = append(allVecs, vec)
+
+	// PDF: split into page chunks to stay within Gemini's 6-page limit
+	if mimeType == "application/pdf" {
+		chunks, err := pdfutil.SplitPages(data, pdfutil.DefaultMaxPages)
+		if err != nil {
+			return fmt.Errorf("failed to split PDF: %w", err)
+		}
+
+		for _, chunk := range chunks {
+			vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+				MIMEType: mimeType,
+				Data:     chunk.Data,
+			}, embedding.TaskRetrievalDocument, config.Dimension)
+			if err != nil {
+				return fmt.Errorf("failed to embed PDF pages %d-%d: %w", chunk.StartPage, chunk.EndPage, err)
+			}
+
+			pageLabel := fmt.Sprintf("pages %d-%d of %d", chunk.StartPage, chunk.EndPage, chunk.TotalPages)
+			allMeta = append(allMeta, ChunkMeta{
+				FilePath:    fileName,
+				StartOffset: 0,
+				Text:        fmt.Sprintf("[%s: %s (%s)]", ct, fileName, pageLabel),
+				ContentType: ct,
+				MIMEType:    mimeType,
+				PageLabel:   pageLabel,
+			})
+			allVecs = append(allVecs, vec)
+		}
+	} else if strings.HasPrefix(mimeType, "audio/") || strings.HasPrefix(mimeType, "video/") {
+		// Audio/Video: write to temp file, probe, and split if needed
+		if err := mediautil.CheckFFmpeg(); err != nil {
+			return err
+		}
+
+		tmpFile, err := os.CreateTemp("", "ragujuary-media-*"+extensionForMIME(mimeType))
+		if err != nil {
+			return fmt.Errorf("failed to create temp file: %w", err)
+		}
+		tmpPath := tmpFile.Name()
+		defer os.Remove(tmpPath)
+
+		if _, err := tmpFile.Write(data); err != nil {
+			tmpFile.Close()
+			return fmt.Errorf("failed to write temp file: %w", err)
+		}
+		tmpFile.Close()
+
+		needsSplit, _, _, maxDur, probeErr := mediautil.NeedsSplit(tmpPath, mimeType)
+		if probeErr != nil || !needsSplit {
+			// Can't probe or short enough — embed directly
+			vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+				MIMEType: mimeType,
+				Data:     data,
+			}, embedding.TaskRetrievalDocument, config.Dimension)
+			if err != nil {
+				return fmt.Errorf("failed to embed multimodal content: %w", err)
+			}
+			allMeta = append(allMeta, ChunkMeta{
+				FilePath:    fileName,
+				StartOffset: 0,
+				Text:        fmt.Sprintf("[%s: %s]", ct, fileName),
+				ContentType: ct,
+				MIMEType:    mimeType,
+			})
+			allVecs = append(allVecs, vec)
+		} else {
+			segments, err := mediautil.SplitMedia(tmpPath, mimeType, maxDur)
+			if err != nil {
+				return fmt.Errorf("failed to split media: %w", err)
+			}
+			for _, seg := range segments {
+				vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+					MIMEType: mimeType,
+					Data:     seg.Data,
+				}, embedding.TaskRetrievalDocument, config.Dimension)
+				if err != nil {
+					return fmt.Errorf("failed to embed media segment %s: %w",
+						mediautil.FormatTimeLabel(seg.StartSec, seg.EndSec, seg.TotalSec), err)
+				}
+				timeLabel := mediautil.FormatTimeLabel(seg.StartSec, seg.EndSec, seg.TotalSec)
+				allMeta = append(allMeta, ChunkMeta{
+					FilePath:    fileName,
+					StartOffset: 0,
+					Text:        fmt.Sprintf("[%s: %s (%s)]", ct, fileName, timeLabel),
+					ContentType: ct,
+					MIMEType:    mimeType,
+					PageLabel:   timeLabel,
+				})
+				allVecs = append(allVecs, vec)
+			}
+		}
+	} else {
+		// Image and other multimodal: single embedding
+		vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+			MIMEType: mimeType,
+			Data:     data,
+		}, embedding.TaskRetrievalDocument, config.Dimension)
+		if err != nil {
+			return fmt.Errorf("failed to embed multimodal content: %w", err)
+		}
+
+		allMeta = append(allMeta, ChunkMeta{
+			FilePath:    fileName,
+			StartOffset: 0,
+			Text:        fmt.Sprintf("[%s: %s]", ct, fileName),
+			ContentType: ct,
+			MIMEType:    mimeType,
+		})
+		allVecs = append(allVecs, vec)
+	}
 
 	if len(allVecs) > 0 {
 		dimension = len(allVecs[0])
@@ -575,4 +852,22 @@ func (e *Engine) DeleteFiles(storeName, pattern string) (int, error) {
 	}
 
 	return len(matchedFiles), nil
+}
+
+// extensionForMIME returns a file extension for the given MIME type
+func extensionForMIME(mimeType string) string {
+	switch mimeType {
+	case "audio/mp3":
+		return ".mp3"
+	case "audio/wav":
+		return ".wav"
+	case "audio/ogg":
+		return ".ogg"
+	case "video/mp4":
+		return ".mp4"
+	case "video/mpeg":
+		return ".mpeg"
+	default:
+		return ""
+	}
 }

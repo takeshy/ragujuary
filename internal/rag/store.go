@@ -22,6 +22,7 @@ type ChunkMeta struct {
 	Text        string `json:"text"`
 	ContentType string `json:"content_type,omitempty"` // "image", "pdf", "video", "audio" (empty = text)
 	MIMEType    string `json:"mime_type,omitempty"`
+	PageLabel   string `json:"page_label,omitempty"` // e.g. "pages 1-6 of 24"
 }
 
 // RagIndex holds the complete index metadata

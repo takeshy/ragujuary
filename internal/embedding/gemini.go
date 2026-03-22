@@ -7,7 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
+)
+
+const (
+	maxRetries   = 3
+	retryBaseWait = 5 * time.Second
 )
 
 const (
@@ -67,6 +73,11 @@ type geminiBatchResponse struct {
 	Embeddings []geminiEmbeddingValues `json:"embeddings"`
 }
 
+// isRetryableStatus returns true for HTTP status codes that should be retried
+func isRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusServiceUnavailable || statusCode == http.StatusTooManyRequests
+}
+
 // doEmbedRequest sends an embedContent request and returns the embedding values
 func (c *GeminiClient) doEmbedRequest(model string, reqBody geminiEmbedRequest) ([]float32, error) {
 	url := fmt.Sprintf("%s/models/%s:embedContent?key=%s", geminiBaseURL, model, c.apiKey)
@@ -76,33 +87,47 @@ func (c *GeminiClient) doEmbedRequest(model string, reqBody geminiEmbedRequest) 
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := retryBaseWait * time.Duration(attempt)
+			fmt.Fprintf(os.Stderr, "Retrying embedContent (attempt %d/%d, wait %s)...\n", attempt, maxRetries, wait)
+			time.Sleep(wait)
+		}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to embed content: %w", err)
-	}
-	defer resp.Body.Close()
+		req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to embed content: %w", err)
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			var embedResp geminiEmbedResponse
+			if err := json.Unmarshal(body, &embedResp); err != nil {
+				return nil, fmt.Errorf("failed to parse response: %w", err)
+			}
+			return embedResp.Embedding.Values, nil
+		}
+
+		lastErr = fmt.Errorf("embed content failed with status %d: %s", resp.StatusCode, string(body))
+		if !isRetryableStatus(resp.StatusCode) {
+			return nil, lastErr
+		}
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embed content failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var embedResp geminiEmbedResponse
-	if err := json.Unmarshal(body, &embedResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return embedResp.Embedding.Values, nil
+	return nil, lastErr
 }
 
 // EmbedContent generates an embedding for a single text
@@ -166,36 +191,50 @@ func (c *GeminiClient) BatchEmbedContents(model string, texts []string, taskType
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := retryBaseWait * time.Duration(attempt)
+			fmt.Fprintf(os.Stderr, "Retrying batchEmbedContents (attempt %d/%d, wait %s)...\n", attempt, maxRetries, wait)
+			time.Sleep(wait)
+		}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to batch embed: %w", err)
-	}
-	defer resp.Body.Close()
+		req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to batch embed: %w", err)
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			var batchResp geminiBatchResponse
+			if err := json.Unmarshal(body, &batchResp); err != nil {
+				return nil, fmt.Errorf("failed to parse response: %w", err)
+			}
+
+			result := make([][]float32, len(batchResp.Embeddings))
+			for i, emb := range batchResp.Embeddings {
+				result[i] = emb.Values
+			}
+			return result, nil
+		}
+
+		lastErr = fmt.Errorf("batch embed failed with status %d: %s", resp.StatusCode, string(body))
+		if !isRetryableStatus(resp.StatusCode) {
+			return nil, lastErr
+		}
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("batch embed failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var batchResp geminiBatchResponse
-	if err := json.Unmarshal(body, &batchResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	result := make([][]float32, len(batchResp.Embeddings))
-	for i, emb := range batchResp.Embeddings {
-		result[i] = emb.Values
-	}
-
-	return result, nil
+	return nil, lastErr
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/takeshy/ragujuary/internal/fileutil"
 	"github.com/takeshy/ragujuary/internal/gemini"
+	"github.com/takeshy/ragujuary/internal/pdfutil"
 	"github.com/takeshy/ragujuary/internal/rag"
 )
 
@@ -470,11 +471,29 @@ func (s *Server) handleEmbedIndex(ctx context.Context, req *mcp.CallToolRequest,
 			}, output, nil
 		}
 
+		// Count chunks from the saved index
+		chunks := 1
+		if input.MIMEType == "application/pdf" {
+			if pageCount, err := pdfutil.PageCount(data); err == nil {
+				chunks = (pageCount + pdfutil.DefaultMaxPages - 1) / pdfutil.DefaultMaxPages
+			}
+		} else if idx, _, loadErr := rag.LoadIndex(storeName); loadErr == nil && idx != nil {
+			count := 0
+			for _, m := range idx.Meta {
+				if m.FilePath == input.FileName {
+					count++
+				}
+			}
+			if count > 0 {
+				chunks = count
+			}
+		}
+
 		output.Success = true
-		output.Chunks = 1
+		output.Chunks = chunks
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
-				&mcp.TextContent{Text: fmt.Sprintf("Successfully indexed multimodal '%s' (%s, 1 embedding)", input.FileName, ct)},
+				&mcp.TextContent{Text: fmt.Sprintf("Successfully indexed multimodal '%s' (%s, %d embedding(s))", input.FileName, ct, chunks)},
 			},
 		}, output, nil
 	}
@@ -536,6 +555,7 @@ func (s *Server) handleEmbedQuery(ctx context.Context, req *mcp.CallToolRequest,
 			FilePath:    r.FilePath,
 			Score:       r.Score,
 			ContentType: r.ContentType,
+			PageLabel:   r.PageLabel,
 		})
 		text := r.Text
 		if len(text) > 300 {

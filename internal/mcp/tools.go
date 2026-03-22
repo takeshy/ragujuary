@@ -155,4 +155,5 @@ type EmbedSearchResult struct {
 	FilePath    string  `json:"file_path"`
 	Score       float64 `json:"score"`
 	ContentType string  `json:"content_type,omitempty"`
+	PageLabel   string  `json:"page_label,omitempty"`
 }

@@ -18,11 +18,13 @@ A CLI tool and MCP server for RAG (Retrieval-Augmented Generation) using Google'
 **Embedding Mode** (Local RAG):
 - Index files using Gemini Embedding API (`gemini-embedding-2-preview`)
 - **Multimodal support**: images (PNG/JPEG), PDF, video (MP4), audio (MP3/WAV) alongside text
+- **Automatic splitting**: PDFs over 6 pages, audio over 80s, and video over 80s/120s are automatically split into embeddable chunks
 - Local vector storage with cosine similarity search
 - Smart text chunking (paragraph/sentence-aware, Japanese supported)
 - Incremental indexing (only re-embeds changed files)
 - Configurable chunk size, overlap, top-K, and min-score
-- OpenAI-compatible backends (Ollama, LM Studio) for text-only embedding
+- OpenAI-compatible backends (Ollama, LM Studio) with automatic PDF text extraction
+- Automatic retry on 503/429 API errors with exponential backoff
 
 ### Common
 - Delete files or entire stores
@@ -44,7 +46,8 @@ Gemini File Search is a fully managed RAG system built into the Gemini API. Unli
 The Gemini Embedding API generates vector representations of content in a unified semantic space, enabling cross-modal search (e.g., find images with text queries):
 
 - Model: `gemini-embedding-2-preview` (multimodal, 8192 tokens)
-- **Supported modalities**: text, images (PNG/JPEG), PDF (up to 6 pages), video (up to 120s), audio (up to 80s)
+- **Supported modalities**: text, images (PNG/JPEG), PDF, video (MP4/MPEG), audio (MP3/WAV)
+- **Per-request limits**: PDF up to 6 pages, video up to 120s (80s with audio), audio up to 80s — ragujuary automatically splits larger files
 - Task types optimized for retrieval: `RETRIEVAL_DOCUMENT` (indexing), `RETRIEVAL_QUERY` (searching)
 - Configurable output dimensions (128-3072, default 768)
 - Batch embedding for text; individual embedding for multimodal content
@@ -62,6 +65,10 @@ git clone https://github.com/takeshy/ragujuary.git
 cd ragujuary
 go build -o ragujuary .
 ```
+
+### Prerequisites
+
+- **ffmpeg** (optional): Required for audio/video file splitting. Install from [ffmpeg.org](https://ffmpeg.org/download.html) or via your package manager. If ffmpeg is not installed, indexing directories containing audio/video files will return an error.
 
 ## Configuration
 
@@ -237,7 +244,12 @@ ragujuary clean -s mystore -f  # force without confirmation
 #### Index files
 
 ```bash
-# Index files from directories (text files are chunked, images/PDF/video/audio are embedded as-is)
+# Index files from directories
+# Text: chunked by paragraph/sentence boundaries
+# PDF: auto-split into 6-page chunks
+# Audio: auto-split into 80s segments (requires ffmpeg)
+# Video: auto-split into 80s/120s segments (requires ffmpeg)
+# Images: embedded as-is
 ragujuary embed index -s mystore ./docs
 
 # Index from multiple directories with exclusions
@@ -249,12 +261,15 @@ ragujuary embed index -s mystore --chunk-size 500 --chunk-overlap 100 ./docs
 # Use a different model/dimension
 ragujuary embed index -s mystore --model gemini-embedding-2-preview --dimension 1536 ./docs
 
-# Use Ollama (text-only, multimodal files are skipped with a warning)
+# Use Ollama (PDFs are text-extracted and indexed; images/audio/video are skipped)
 ragujuary embed index -s mystore --embed-url http://localhost:11434 --model nomic-embed-text ./docs
 ```
 
 Indexing is incremental: only files with changed checksums are re-embedded.
-Multimodal files (images, PDF, video, audio) are detected automatically by extension and embedded as single vectors without chunking.
+
+**Gemini backend**: Images, PDF, video, and audio are embedded as multimodal vectors. PDFs exceeding 6 pages are split into page-range chunks, and audio/video files exceeding the duration limit are split into time-range segments using ffmpeg. Search results include page/time labels for split files.
+
+**Text-only backends (Ollama, etc.)**: PDFs are automatically text-extracted and indexed as text chunks (searchable with content display). Images, audio, and video are skipped with a warning.
 
 #### Query the embedding store
 
@@ -483,7 +498,7 @@ Example:
 
 ##### `embed_index` - Index content with embeddings
 
-Index content for local semantic search. Supports text (chunked) and multimodal content (images, PDF, video, audio as single embeddings).
+Index content for local semantic search. Supports text (chunked) and multimodal content (images, PDF, video, audio). PDFs over 6 pages and audio/video exceeding duration limits are automatically split.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -600,11 +615,12 @@ File Search supports a wide range of formats:
 ### Embedding Mode
 - Text: 8,192 tokens per chunk
 - Images: max 6 per request (PNG, JPEG)
-- PDF: max 6 pages per file
-- Video: max 120 seconds (80s with audio track)
-- Audio: max 80 seconds
+- PDF: 6 pages per embedding request (larger PDFs are automatically split into 6-page chunks)
+- Video: 120 seconds per request without audio, 80 seconds with audio (longer videos are automatically split using ffmpeg)
+- Audio: 80 seconds per request (longer audio files are automatically split using ffmpeg)
 - Output dimensions: 128-3,072
 - Multimodal embedding requires Gemini backend (not available with OpenAI-compatible backends)
+- API errors (503/429) are automatically retried up to 3 times with exponential backoff
 
 ## License
 

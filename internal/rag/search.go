@@ -7,9 +7,10 @@ import (
 
 // SearchResult represents a single search result
 type SearchResult struct {
-	Text     string  `json:"text"`
-	FilePath string  `json:"file_path"`
-	Score    float64 `json:"score"`
+	Text        string  `json:"text"`
+	FilePath    string  `json:"file_path"`
+	Score       float64 `json:"score"`
+	ContentType string  `json:"content_type,omitempty"`
 }
 
 // Search finds the most similar chunks to the query vector
@@ -45,9 +46,10 @@ func Search(queryVec []float32, index *RagIndex, vectors []float32, topK int, mi
 	results := make([]SearchResult, len(scores))
 	for i, s := range scores {
 		results[i] = SearchResult{
-			Text:     index.Meta[s.index].Text,
-			FilePath: index.Meta[s.index].FilePath,
-			Score:    s.score,
+			Text:        index.Meta[s.index].Text,
+			FilePath:    index.Meta[s.index].FilePath,
+			Score:       s.score,
+			ContentType: index.Meta[s.index].ContentType,
 		}
 	}
 

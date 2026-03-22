@@ -117,11 +117,13 @@ type StoreInfo struct {
 type EmbedIndexInput struct {
 	StoreName    string `json:"store_name" jsonschema:"name of the embedding store"`
 	FileName     string `json:"file_name" jsonschema:"file name or identifier for the content"`
-	FileContent  string `json:"file_content" jsonschema:"text content to index"`
+	FileContent  string `json:"file_content" jsonschema:"text content to index (or base64-encoded binary if is_base64 is true)"`
 	Model        string `json:"model,omitempty" jsonschema:"embedding model (default: gemini-embedding-2-preview)"`
 	ChunkSize    int    `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000)"`
 	ChunkOverlap int    `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200)"`
 	Dimension    int    `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768)"`
+	MIMEType     string `json:"mime_type,omitempty" jsonschema:"MIME type for binary content (e.g. image/png, application/pdf, video/mp4)"`
+	IsBase64     bool   `json:"is_base64,omitempty" jsonschema:"set to true if file_content is base64 encoded binary data"`
 }
 
 // EmbedIndexOutput represents output from the embed_index tool
@@ -149,7 +151,8 @@ type EmbedQueryOutput struct {
 
 // EmbedSearchResult represents a single embedding search result
 type EmbedSearchResult struct {
-	Text     string  `json:"text"`
-	FilePath string  `json:"file_path"`
-	Score    float64 `json:"score"`
+	Text        string  `json:"text"`
+	FilePath    string  `json:"file_path"`
+	Score       float64 `json:"score"`
+	ContentType string  `json:"content_type,omitempty"`
 }

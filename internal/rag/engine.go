@@ -3,6 +3,7 @@ package rag
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/takeshy/ragujuary/internal/embedding"
 	"github.com/takeshy/ragujuary/internal/fileutil"
@@ -34,11 +35,13 @@ func DefaultConfig() Config {
 
 // IndexResult holds the result of an indexing operation
 type IndexResult struct {
-	TotalChunks  int
-	IndexedFiles int
-	SkippedFiles int
-	NewFiles     int
-	UpdatedFiles int
+	TotalChunks       int
+	IndexedFiles      int
+	SkippedFiles      int
+	NewFiles          int
+	UpdatedFiles      int
+	MultimodalFiles   int
+	SkippedMultimodal int
 }
 
 // Engine orchestrates the RAG indexing and query pipeline
@@ -65,21 +68,26 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		return &IndexResult{}, nil
 	}
 
-	// Compute checksums
+	// Compute checksums, classify files
 	newChecksums := make(map[string]string)
-	fileContents := make(map[string]string)
+	fileContents := make(map[string]string) // text files only
+	fileInfoMap := make(map[string]fileutil.FileInfo)
 	for _, f := range files {
 		checksum, err := fileutil.CalculateChecksum(f.Path)
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate checksum for %s: %w", f.Path, err)
 		}
 		newChecksums[f.Path] = checksum
+		fileInfoMap[f.Path] = f
 
-		content, err := os.ReadFile(f.Path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read file %s: %w", f.Path, err)
+		ct := fileutil.ClassifyContent(f.MimeType)
+		if !fileutil.IsMultimodal(ct) {
+			content, err := os.ReadFile(f.Path)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read file %s: %w", f.Path, err)
+			}
+			fileContents[f.Path] = string(content)
 		}
-		fileContents[f.Path] = string(content)
 	}
 
 	// Load existing index
@@ -121,10 +129,6 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		}
 	}
 
-	for path, checksum := range newChecksums {
-		finalChecksums[path] = checksum
-	}
-
 	// Find changed/new files
 	result := &IndexResult{}
 	for filePath, checksum := range newChecksums {
@@ -141,15 +145,28 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		}
 	}
 
-	// Chunk and embed changed files
+	// Split changed files into text and multimodal
+	var textFiles []string
+	var multimodalFileInfos []fileutil.FileInfo
+	for _, filePath := range changedFiles {
+		fi := fileInfoMap[filePath]
+		ct := fileutil.ClassifyContent(fi.MimeType)
+		if fileutil.IsMultimodal(ct) {
+			multimodalFileInfos = append(multimodalFileInfos, fi)
+		} else {
+			textFiles = append(textFiles, filePath)
+		}
+	}
+
+	// Chunk and embed text files
 	newMeta := make([]ChunkMeta, 0)
 	newVecs := make([][]float32, 0)
 
-	if len(changedFiles) > 0 {
+	if len(textFiles) > 0 {
 		var allTexts []string
 		var allMetas []ChunkMeta
 
-		for _, filePath := range changedFiles {
+		for _, filePath := range textFiles {
 			content := fileContents[filePath]
 			chunks := ChunkText(content, config.ChunkSize, config.ChunkOverlap)
 
@@ -189,6 +206,58 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		newMeta = append(newMeta, allMetas...)
 	}
 
+	// Embed multimodal files (one at a time, no chunking)
+	mmClient, supportsMultimodal := e.embeddingClient.(embedding.MultimodalEmbedder)
+	for _, fi := range multimodalFileInfos {
+		if !supportsMultimodal {
+			fmt.Fprintf(os.Stderr, "Warning: skipping %s (backend does not support multimodal embedding)\n", fi.Path)
+			delete(finalChecksums, fi.Path)
+			result.SkippedMultimodal++
+			continue
+		}
+		if !fileutil.SupportedEmbeddingMIME(fi.MimeType) {
+			fmt.Fprintf(os.Stderr, "Warning: skipping %s (unsupported MIME type %s)\n", fi.Path, fi.MimeType)
+			delete(finalChecksums, fi.Path)
+			result.SkippedMultimodal++
+			continue
+		}
+
+		data, err := os.ReadFile(fi.Path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to read %s: %v\n", fi.Path, err)
+			delete(finalChecksums, fi.Path)
+			result.SkippedMultimodal++
+			continue
+		}
+
+		vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+			MIMEType: fi.MimeType,
+			Data:     data,
+		}, embedding.TaskRetrievalDocument, config.Dimension)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to embed %s: %v\n", fi.Path, err)
+			delete(finalChecksums, fi.Path)
+			result.SkippedMultimodal++
+			continue
+		}
+
+		ct := fileutil.ClassifyContent(fi.MimeType)
+		newMeta = append(newMeta, ChunkMeta{
+			FilePath:    fi.Path,
+			StartOffset: 0,
+			Text:        fmt.Sprintf("[%s: %s]", ct, filepath.Base(fi.Path)),
+			ContentType: ct,
+			MIMEType:    fi.MimeType,
+		})
+		newVecs = append(newVecs, vec)
+		result.MultimodalFiles++
+		finalChecksums[fi.Path] = newChecksums[fi.Path]
+	}
+
+	for _, filePath := range textFiles {
+		finalChecksums[filePath] = newChecksums[filePath]
+	}
+
 	// Merge unchanged + new
 	allMeta := append(unchangedMeta, newMeta...)
 	allVecArrays := append(unchangedVecs, newVecs...)
@@ -218,9 +287,17 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 	}
 
 	result.TotalChunks = len(allMeta)
-	result.IndexedFiles = len(finalChecksums)
+	result.IndexedFiles = len(allMetaFilePaths(allMeta))
 
 	return result, nil
+}
+
+func allMetaFilePaths(meta []ChunkMeta) map[string]struct{} {
+	files := make(map[string]struct{}, len(meta))
+	for _, m := range meta {
+		files[m.FilePath] = struct{}{}
+	}
+	return files
 }
 
 // IndexContent indexes a single piece of content (for MCP use)
@@ -314,6 +391,88 @@ func (e *Engine) IndexContent(storeName, fileName, content string, config Config
 		}
 	}
 	checksums[fileName] = "content:" + fileName
+
+	index := &RagIndex{
+		Meta:           allMeta,
+		Dimension:      dimension,
+		FileChecksums:  checksums,
+		EmbeddingModel: config.Model,
+	}
+
+	return SaveIndex(storeName, index, flatVectors)
+}
+
+// IndexMultimodalContent indexes a single multimodal file (for MCP use)
+func (e *Engine) IndexMultimodalContent(storeName, fileName string, data []byte, mimeType string, config Config) error {
+	mmClient, ok := e.embeddingClient.(embedding.MultimodalEmbedder)
+	if !ok {
+		return fmt.Errorf("current embedding backend does not support multimodal content")
+	}
+
+	// Load existing index
+	existingIndex, existingVectors, _ := LoadIndex(storeName)
+
+	var allMeta []ChunkMeta
+	var allVecs [][]float32
+	dimension := config.Dimension
+
+	if existingIndex != nil && existingVectors != nil {
+		if existingIndex.EmbeddingModel != "" && existingIndex.EmbeddingModel != config.Model {
+			existingIndex = nil
+			existingVectors = nil
+		}
+	}
+
+	if existingIndex != nil && existingVectors != nil {
+		dim := existingIndex.Dimension
+		dimension = dim
+		for i, meta := range existingIndex.Meta {
+			if meta.FilePath != fileName {
+				allMeta = append(allMeta, meta)
+				vec := make([]float32, dim)
+				copy(vec, existingVectors[i*dim:(i+1)*dim])
+				allVecs = append(allVecs, vec)
+			}
+		}
+	}
+
+	// Embed multimodal content (single embedding, no chunking)
+	vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
+		MIMEType: mimeType,
+		Data:     data,
+	}, embedding.TaskRetrievalDocument, config.Dimension)
+	if err != nil {
+		return fmt.Errorf("failed to embed multimodal content: %w", err)
+	}
+
+	ct := fileutil.ClassifyContent(mimeType)
+	allMeta = append(allMeta, ChunkMeta{
+		FilePath:    fileName,
+		StartOffset: 0,
+		Text:        fmt.Sprintf("[%s: %s]", ct, fileName),
+		ContentType: ct,
+		MIMEType:    mimeType,
+	})
+	allVecs = append(allVecs, vec)
+
+	if len(allVecs) > 0 {
+		dimension = len(allVecs[0])
+	}
+
+	flatVectors := make([]float32, len(allMeta)*dimension)
+	for i, vec := range allVecs {
+		copy(flatVectors[i*dimension:], vec)
+	}
+
+	checksums := make(map[string]string)
+	if existingIndex != nil {
+		for k, v := range existingIndex.FileChecksums {
+			if k != fileName {
+				checksums[k] = v
+			}
+		}
+	}
+	checksums[fileName] = "multimodal:" + fileName
 
 	index := &RagIndex{
 		Meta:           allMeta,

@@ -106,7 +106,7 @@ func (s *Server) registerTools() {
 	// Embedding-based RAG tools
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "embed_index",
-		Description: "Index content using Gemini embeddings for local semantic search. Content is chunked, embedded, and stored locally.",
+		Description: "Index content using embeddings for local semantic search. Text is chunked and batch-embedded. For multimodal (image/PDF/video/audio), set mime_type and is_base64=true to embed as a single vector.",
 	}, s.handleEmbedIndex)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{

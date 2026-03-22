@@ -163,6 +163,12 @@ func runEmbedIndex(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  New files:     %d\n", result.NewFiles)
 	fmt.Printf("  Updated files: %d\n", result.UpdatedFiles)
 	fmt.Printf("  Skipped files: %d\n", result.SkippedFiles)
+	if result.MultimodalFiles > 0 {
+		fmt.Printf("  Multimodal:    %d\n", result.MultimodalFiles)
+	}
+	if result.SkippedMultimodal > 0 {
+		fmt.Printf("  Skipped (multimodal): %d\n", result.SkippedMultimodal)
+	}
 	fmt.Printf("  Total chunks:  %d\n", result.TotalChunks)
 
 	return nil
@@ -190,7 +196,11 @@ func runEmbedQuery(cmd *cobra.Command, args []string) error {
 	}
 
 	for i, r := range results {
-		fmt.Printf("--- Result %d (score: %.4f, file: %s) ---\n", i+1, r.Score, r.FilePath)
+		typeLabel := ""
+		if r.ContentType != "" {
+			typeLabel = fmt.Sprintf(" [%s]", r.ContentType)
+		}
+		fmt.Printf("--- Result %d (score: %.4f, file: %s%s) ---\n", i+1, r.Score, r.FilePath, typeLabel)
 		text := r.Text
 		if len(text) > 500 {
 			text = text[:500] + "..."
@@ -238,16 +248,24 @@ func runEmbedList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Count chunks per file
+	// Count chunks per file and track content types
 	chunkCounts := make(map[string]int)
+	fileTypes := make(map[string]string)
 	for _, meta := range index.Meta {
 		chunkCounts[meta.FilePath]++
+		if meta.ContentType != "" {
+			fileTypes[meta.FilePath] = meta.ContentType
+		}
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "FILE\tCHUNKS\n")
+	fmt.Fprintf(w, "FILE\tTYPE\tCHUNKS\n")
 	for filePath, count := range chunkCounts {
-		fmt.Fprintf(w, "%s\t%d\n", filePath, count)
+		ct := fileTypes[filePath]
+		if ct == "" {
+			ct = "text"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\n", filePath, ct, count)
 	}
 	w.Flush()
 

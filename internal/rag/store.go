@@ -12,7 +12,7 @@ import (
 const (
 	indexFileName   = "index.json"
 	vectorsFileName = "vectors.bin"
-	formatVersion   = 1
+	formatVersion   = 2
 )
 
 // ChunkMeta holds metadata for a single chunk
@@ -20,6 +20,8 @@ type ChunkMeta struct {
 	FilePath    string `json:"file_path"`
 	StartOffset int    `json:"start_offset"`
 	Text        string `json:"text"`
+	ContentType string `json:"content_type,omitempty"` // "image", "pdf", "video", "audio" (empty = text)
+	MIMEType    string `json:"mime_type,omitempty"`
 }
 
 // RagIndex holds the complete index metadata
@@ -108,8 +110,8 @@ func LoadIndex(storeName string) (*RagIndex, []float32, error) {
 		return nil, nil, fmt.Errorf("failed to parse index: %w", err)
 	}
 
-	if index.FormatVersion != formatVersion {
-		return nil, nil, fmt.Errorf("incompatible index format version %d (expected %d)", index.FormatVersion, formatVersion)
+	if index.FormatVersion > formatVersion {
+		return nil, nil, fmt.Errorf("incompatible index format version %d (max supported: %d)", index.FormatVersion, formatVersion)
 	}
 
 	// Load vectors

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/takeshy/ragujuary/internal/fileutil"
 	"github.com/takeshy/ragujuary/internal/gemini"
 	"github.com/takeshy/ragujuary/internal/rag"
 )
@@ -448,6 +449,37 @@ func (s *Server) handleEmbedIndex(ctx context.Context, req *mcp.CallToolRequest,
 		config.Dimension = input.Dimension
 	}
 
+	// Multimodal path: binary content with MIME type
+	if input.MIMEType != "" && input.IsBase64 {
+		ct := fileutil.ClassifyContent(input.MIMEType)
+		if !fileutil.IsMultimodal(ct) {
+			return nil, output, fmt.Errorf("mime_type %s is not a multimodal type; use plain text indexing instead", input.MIMEType)
+		}
+
+		data, err := base64.StdEncoding.DecodeString(input.FileContent)
+		if err != nil {
+			return nil, output, fmt.Errorf("failed to decode base64 content: %w", err)
+		}
+
+		if err := s.ragEngine.IndexMultimodalContent(storeName, input.FileName, data, input.MIMEType, config); err != nil {
+			output.Error = err.Error()
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
+				},
+			}, output, nil
+		}
+
+		output.Success = true
+		output.Chunks = 1
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Successfully indexed multimodal '%s' (%s, 1 embedding)", input.FileName, ct)},
+			},
+		}, output, nil
+	}
+
+	// Text path
 	if err := s.ragEngine.IndexContent(storeName, input.FileName, input.FileContent, config); err != nil {
 		output.Error = err.Error()
 		return &mcp.CallToolResult{
@@ -457,7 +489,6 @@ func (s *Server) handleEmbedIndex(ctx context.Context, req *mcp.CallToolRequest,
 		}, output, nil
 	}
 
-	// Count chunks for output
 	chunks := rag.ChunkText(input.FileContent, config.ChunkSize, config.ChunkOverlap)
 	output.Success = true
 	output.Chunks = len(chunks)
@@ -501,9 +532,10 @@ func (s *Server) handleEmbedQuery(ctx context.Context, req *mcp.CallToolRequest,
 	var textBuilder strings.Builder
 	for _, r := range results {
 		output.Results = append(output.Results, EmbedSearchResult{
-			Text:     r.Text,
-			FilePath: r.FilePath,
-			Score:    r.Score,
+			Text:        r.Text,
+			FilePath:    r.FilePath,
+			Score:       r.Score,
+			ContentType: r.ContentType,
 		})
 		text := r.Text
 		if len(text) > 300 {

@@ -18,3 +18,16 @@ type Client interface {
 	// BatchEmbedContents generates embeddings for multiple texts
 	BatchEmbedContents(model string, texts []string, taskType TaskType, dimension int) ([][]float32, error)
 }
+
+// MultimodalContent represents binary content for multimodal embedding
+type MultimodalContent struct {
+	MIMEType string
+	Data     []byte
+}
+
+// MultimodalEmbedder is an optional interface for clients that support
+// multimodal embedding (images, PDF, video, audio).
+// Clients that don't support this (e.g., OpenAI-compatible) don't implement it.
+type MultimodalEmbedder interface {
+	EmbedMultimodalContent(model string, content MultimodalContent, taskType TaskType, dimension int) ([]float32, error)
+}

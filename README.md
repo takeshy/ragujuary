@@ -17,10 +17,12 @@ A CLI tool and MCP server for RAG (Retrieval-Augmented Generation) using Google'
 
 **Embedding Mode** (Local RAG):
 - Index files using Gemini Embedding API (`gemini-embedding-2-preview`)
+- **Multimodal support**: images (PNG/JPEG), PDF, video (MP4), audio (MP3/WAV) alongside text
 - Local vector storage with cosine similarity search
 - Smart text chunking (paragraph/sentence-aware, Japanese supported)
 - Incremental indexing (only re-embeds changed files)
 - Configurable chunk size, overlap, top-K, and min-score
+- OpenAI-compatible backends (Ollama, LM Studio) for text-only embedding
 
 ### Common
 - Delete files or entire stores
@@ -39,12 +41,13 @@ Gemini File Search is a fully managed RAG system built into the Gemini API. Unli
 
 ## What is Gemini Embedding?
 
-The Gemini Embedding API generates vector representations of text, enabling custom semantic search:
+The Gemini Embedding API generates vector representations of content in a unified semantic space, enabling cross-modal search (e.g., find images with text queries):
 
 - Model: `gemini-embedding-2-preview` (multimodal, 8192 tokens)
+- **Supported modalities**: text, images (PNG/JPEG), PDF (up to 6 pages), video (up to 120s), audio (up to 80s)
 - Task types optimized for retrieval: `RETRIEVAL_DOCUMENT` (indexing), `RETRIEVAL_QUERY` (searching)
 - Configurable output dimensions (128-3072, default 768)
-- Batch embedding support for efficient indexing
+- Batch embedding for text; individual embedding for multimodal content
 
 ## Installation
 
@@ -234,26 +237,35 @@ ragujuary clean -s mystore -f  # force without confirmation
 #### Index files
 
 ```bash
-# Index files from directories
+# Index files from directories (text files are chunked, images/PDF/video/audio are embedded as-is)
 ragujuary embed index -s mystore ./docs
 
 # Index from multiple directories with exclusions
 ragujuary embed index -s mystore -e '\.git' -e 'node_modules' ./project ./docs
 
-# Custom chunking parameters
+# Custom chunking parameters (applies to text files)
 ragujuary embed index -s mystore --chunk-size 500 --chunk-overlap 100 ./docs
 
 # Use a different model/dimension
 ragujuary embed index -s mystore --model gemini-embedding-2-preview --dimension 1536 ./docs
+
+# Use Ollama (text-only, multimodal files are skipped with a warning)
+ragujuary embed index -s mystore --embed-url http://localhost:11434 --model nomic-embed-text ./docs
 ```
 
 Indexing is incremental: only files with changed checksums are re-embedded.
+Multimodal files (images, PDF, video, audio) are detected automatically by extension and embedded as single vectors without chunking.
 
 #### Query the embedding store
 
+Text queries search across all indexed content, including text chunks and multimodal files (cross-modal search in the same embedding space).
+
 ```bash
-# Semantic search
+# Semantic search (searches text and multimodal content)
 ragujuary embed query -s mystore "How does authentication work?"
+
+# Find images by description
+ragujuary embed query -s mystore "photo of a cat"
 
 # Customize results
 ragujuary embed query -s mystore --top-k 10 --min-score 0.5 "error handling patterns"
@@ -471,24 +483,37 @@ Example:
 
 ##### `embed_index` - Index content with embeddings
 
-Index text content using Gemini Embedding API for local semantic search.
+Index content for local semantic search. Supports text (chunked) and multimodal content (images, PDF, video, audio as single embeddings).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `store_name` | string | Yes | Name of the embedding store |
 | `file_name` | string | Yes | File name or identifier |
-| `file_content` | string | Yes | Text content to index |
+| `file_content` | string | Yes | Text content or base64-encoded binary |
 | `model` | string | No | Embedding model (default: gemini-embedding-2-preview) |
-| `chunk_size` | integer | No | Chunk size in characters (default: 1000) |
-| `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200) |
+| `chunk_size` | integer | No | Chunk size in characters (default: 1000, text only) |
+| `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200, text only) |
 | `dimension` | integer | No | Embedding dimensionality (default: 768) |
+| `mime_type` | string | No | MIME type for binary content (e.g. `image/png`, `application/pdf`) |
+| `is_base64` | boolean | No | Set to true if file_content is base64-encoded binary |
 
-Example:
+Example (text):
 ```json
 {
   "store_name": "my-docs",
   "file_name": "notes.md",
   "file_content": "# Meeting Notes\n\nDiscussed the new authentication system..."
+}
+```
+
+Example (image):
+```json
+{
+  "store_name": "my-docs",
+  "file_name": "diagram.png",
+  "file_content": "iVBORw0KGgoAAAANSUhEUg...",
+  "mime_type": "image/png",
+  "is_base64": true
 }
 ```
 
@@ -567,9 +592,19 @@ File Search supports a wide range of formats:
 
 ## Limits
 
+### FileSearch Mode
 - Max file size: 100 MB per file
 - Storage: 1 GB (Free tier) to 1 TB (Tier 3)
 - Max stores per project: 10
+
+### Embedding Mode
+- Text: 8,192 tokens per chunk
+- Images: max 6 per request (PNG, JPEG)
+- PDF: max 6 pages per file
+- Video: max 120 seconds (80s with audio track)
+- Audio: max 80 seconds
+- Output dimensions: 128-3,072
+- Multimodal embedding requires Gemini backend (not available with OpenAI-compatible backends)
 
 ## License
 

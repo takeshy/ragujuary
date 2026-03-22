@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // FileInfo represents information about a file
@@ -97,7 +98,7 @@ func DiscoverFiles(dirs []string, excludePatterns []string) ([]FileInfo, error) 
 
 // detectMimeType detects MIME type based on file extension
 func detectMimeType(path string) string {
-	ext := filepath.Ext(path)
+	ext := strings.ToLower(filepath.Ext(path))
 	mimeTypes := map[string]string{
 		".txt":  "text/plain",
 		".md":   "text/markdown",
@@ -125,12 +126,62 @@ func detectMimeType(path string) string {
 		".doc":  "application/msword",
 		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		".csv":  "text/csv",
+		// Image types
+		".png":  "image/png",
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".gif":  "image/gif",
+		".webp": "image/webp",
+		// Video types
+		".mp4":  "video/mp4",
+		".mpeg": "video/mpeg",
+		".mpg":  "video/mpeg",
+		// Audio types
+		".mp3": "audio/mp3",
+		".wav": "audio/wav",
+		".ogg": "audio/ogg",
 	}
 
 	if mime, ok := mimeTypes[ext]; ok {
 		return mime
 	}
 	return "application/octet-stream"
+}
+
+// ClassifyContent returns the content type category for a MIME type.
+// Returns "text", "image", "pdf", "video", or "audio".
+func ClassifyContent(mimeType string) string {
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "image"
+	case mimeType == "application/pdf":
+		return "pdf"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "video"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	default:
+		return "text"
+	}
+}
+
+// IsMultimodal returns true if the content type is non-text (image, pdf, video, audio).
+func IsMultimodal(contentType string) bool {
+	return contentType != "text" && contentType != ""
+}
+
+// SupportedEmbeddingMIME returns true if the MIME type is supported by Gemini's
+// multimodal embedding API.
+func SupportedEmbeddingMIME(mimeType string) bool {
+	switch mimeType {
+	case "image/png", "image/jpeg",
+		"application/pdf",
+		"video/mp4", "video/mpeg",
+		"audio/mp3", "audio/wav":
+		return true
+	default:
+		return false
+	}
 }
 
 // FilterFilesByPattern filters files by a regex pattern

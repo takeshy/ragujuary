@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,7 +42,13 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text string `json:"text"`
+	Text       string            `json:"text,omitempty"`
+	InlineData *geminiInlineData `json:"inline_data,omitempty"`
+}
+
+type geminiInlineData struct {
+	MIMEType string `json:"mime_type"`
+	Data     string `json:"data"` // base64-encoded
 }
 
 type geminiEmbedResponse struct {
@@ -60,20 +67,9 @@ type geminiBatchResponse struct {
 	Embeddings []geminiEmbeddingValues `json:"embeddings"`
 }
 
-// EmbedContent generates an embedding for a single text
-func (c *GeminiClient) EmbedContent(model, text string, taskType TaskType, dimension int) ([]float32, error) {
+// doEmbedRequest sends an embedContent request and returns the embedding values
+func (c *GeminiClient) doEmbedRequest(model string, reqBody geminiEmbedRequest) ([]float32, error) {
 	url := fmt.Sprintf("%s/models/%s:embedContent?key=%s", geminiBaseURL, model, c.apiKey)
-
-	reqBody := geminiEmbedRequest{
-		Model: "models/" + model,
-		Content: geminiContent{
-			Parts: []geminiPart{{Text: text}},
-		},
-		TaskType: string(taskType),
-	}
-	if dimension > 0 {
-		reqBody.OutputDimensionality = dimension
-	}
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
@@ -107,6 +103,41 @@ func (c *GeminiClient) EmbedContent(model, text string, taskType TaskType, dimen
 	}
 
 	return embedResp.Embedding.Values, nil
+}
+
+// EmbedContent generates an embedding for a single text
+func (c *GeminiClient) EmbedContent(model, text string, taskType TaskType, dimension int) ([]float32, error) {
+	reqBody := geminiEmbedRequest{
+		Model: "models/" + model,
+		Content: geminiContent{
+			Parts: []geminiPart{{Text: text}},
+		},
+		TaskType: string(taskType),
+	}
+	if dimension > 0 {
+		reqBody.OutputDimensionality = dimension
+	}
+	return c.doEmbedRequest(model, reqBody)
+}
+
+// EmbedMultimodalContent generates an embedding for multimodal content (image, PDF, video, audio)
+func (c *GeminiClient) EmbedMultimodalContent(model string, content MultimodalContent, taskType TaskType, dimension int) ([]float32, error) {
+	reqBody := geminiEmbedRequest{
+		Model: "models/" + model,
+		Content: geminiContent{
+			Parts: []geminiPart{{
+				InlineData: &geminiInlineData{
+					MIMEType: content.MIMEType,
+					Data:     base64.StdEncoding.EncodeToString(content.Data),
+				},
+			}},
+		},
+		TaskType: string(taskType),
+	}
+	if dimension > 0 {
+		reqBody.OutputDimensionality = dimension
+	}
+	return c.doEmbedRequest(model, reqBody)
 }
 
 // BatchEmbedContents generates embeddings for multiple texts

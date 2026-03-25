@@ -61,18 +61,21 @@ var embedQueryCmd = &cobra.Command{
 var embedListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List indexed files or stores",
+	Args:  cobra.NoArgs,
 	RunE:  runEmbedList,
 }
 
 var embedDeleteCmd = &cobra.Command{
 	Use:   "delete",
 	Short: "Delete files from the embedding index",
+	Args:  cobra.NoArgs,
 	RunE:  runEmbedDelete,
 }
 
 var embedClearCmd = &cobra.Command{
-	Use:   "clear",
+	Use:   "clear [store-name]",
 	Short: "Clear an entire embedding store",
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runEmbedClear,
 }
 
@@ -302,7 +305,11 @@ func runEmbedDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runEmbedClear(cmd *cobra.Command, args []string) error {
-	fmt.Printf("Are you sure you want to clear store '%s'? [y/N] ", storeName)
+	name := storeName
+	if len(args) > 0 {
+		name = args[0]
+	}
+	fmt.Printf("Are you sure you want to clear store '%s'? [y/N] ", name)
 	var confirm string
 	fmt.Scanln(&confirm)
 
@@ -311,10 +318,10 @@ func runEmbedClear(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if err := rag.DeleteIndex(storeName); err != nil {
+	if err := rag.DeleteIndex(name); err != nil {
 		return err
 	}
 
-	fmt.Printf("Store '%s' cleared.\n", storeName)
+	fmt.Printf("Store '%s' cleared.\n", name)
 	return nil
 }

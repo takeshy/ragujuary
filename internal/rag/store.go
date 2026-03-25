@@ -137,6 +137,13 @@ func DeleteIndex(storeName string) error {
 		return err
 	}
 
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("store '%s' not found", storeName)
+		}
+		return fmt.Errorf("failed to access store: %w", err)
+	}
+
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("failed to delete store: %w", err)
 	}

@@ -356,7 +356,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 #### Available MCP Tools
 
-The MCP server exposes 9 tools: 7 for FileSearch mode and 2 for Embedding mode.
+The MCP server exposes 11 tools: 8 for FileSearch mode and 3 for Embedding mode.
 
 ##### `upload` - Upload a file to a store
 
@@ -496,6 +496,27 @@ Example:
 {}
 ```
 
+##### `upload_directory` - Upload files from directories
+
+Upload files from local directories to a Gemini File Search Store. Recursively discovers files, skips unchanged files by checksum, and uploads in parallel. Syncs local cache with remote state before uploading to prevent duplicates.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Name of the File Search Store |
+| `directories` | array | Yes | List of directory paths to upload |
+| `exclude_patterns` | array | No | Regex patterns to exclude files |
+| `parallelism` | integer | No | Number of parallel uploads (default: 5) |
+
+Example:
+```json
+{
+  "store_name": "my-docs",
+  "directories": ["/path/to/docs", "/path/to/src"],
+  "exclude_patterns": ["\\.git", "node_modules"],
+  "parallelism": 10
+}
+```
+
 ##### `embed_index` - Index content with embeddings
 
 Index content for local semantic search. Supports text (chunked) and multimodal content (images, PDF, video, audio). PDFs over 6 pages and audio/video exceeding duration limits are automatically split.
@@ -529,6 +550,31 @@ Example (image):
   "file_content": "iVBORw0KGgoAAAANSUhEUg...",
   "mime_type": "image/png",
   "is_base64": true
+}
+```
+
+##### `embed_index_directory` - Index files from directories with embeddings
+
+Index files from local directories using embeddings for local semantic search. Recursively discovers files, computes checksums for incremental updates, and batch-embeds text/multimodal content.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `store_name` | string | Yes | Name of the embedding store |
+| `directories` | array | Yes | List of directory paths to index |
+| `exclude_patterns` | array | No | Regex patterns to exclude files |
+| `model` | string | No | Embedding model (default: gemini-embedding-2-preview) |
+| `chunk_size` | integer | No | Chunk size in characters (default: 1000) |
+| `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200) |
+| `dimension` | integer | No | Embedding dimensionality (default: 768) |
+
+Example:
+```json
+{
+  "store_name": "my-docs",
+  "directories": ["/path/to/docs", "/path/to/src"],
+  "exclude_patterns": ["\\.git", "node_modules"],
+  "chunk_size": 500,
+  "chunk_overlap": 100
 }
 ```
 

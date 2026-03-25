@@ -79,6 +79,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		APIKey:      key,
 		EmbedURL:    serveEmbedURL,
 		EmbedAPIKey: getServeEmbeddingAPIKey(),
+		DataFile:    dataFile,
 	}
 
 	// Create MCP server

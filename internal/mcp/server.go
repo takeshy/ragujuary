@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/takeshy/ragujuary/internal/embedding"
 	"github.com/takeshy/ragujuary/internal/gemini"
 	"github.com/takeshy/ragujuary/internal/rag"
+	"github.com/takeshy/ragujuary/internal/store"
 )
 
 // ServerConfig holds configuration for the MCP server
@@ -16,6 +18,7 @@ type ServerConfig struct {
 	APIKey      string
 	EmbedURL    string // Optional: OpenAI-compatible embedding URL (e.g. http://localhost:11434 for Ollama)
 	EmbedAPIKey string // Optional: API key for OpenAI-compatible embedding APIs
+	DataFile    string // Optional: path to store data file (default: ~/.ragujuary.json)
 }
 
 // Server wraps the MCP server with ragujuary-specific functionality
@@ -23,6 +26,8 @@ type Server struct {
 	mcpServer    *mcp.Server
 	geminiClient *gemini.Client
 	ragEngine    *rag.Engine
+	storeManager *store.Manager
+	storeMu      sync.Mutex
 	config       ServerConfig
 }
 
@@ -113,6 +118,17 @@ func (s *Server) registerTools() {
 		Name:        "embed_query",
 		Description: "Query the local embedding store using semantic search. Returns the most similar text chunks with relevance scores.",
 	}, s.handleEmbedQuery)
+
+	// Directory-based tools
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "embed_index_directory",
+		Description: "Index files from directories using embeddings for local semantic search. Recursively discovers files, computes checksums for incremental updates, and batch-embeds text/multimodal content. Supports exclude patterns for filtering.",
+	}, s.handleEmbedIndexDirectory)
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "upload_directory",
+		Description: "Upload files from directories to a Gemini File Search Store. Recursively discovers files, skips unchanged files by checksum, and uploads in parallel.",
+	}, s.handleUploadDirectory)
 }
 
 // RunStdio runs the server using stdio transport
@@ -140,4 +156,21 @@ func (s *Server) getStoreName(inputStoreName string) (string, error) {
 		return inputStoreName, nil
 	}
 	return "", fmt.Errorf("store_name is required")
+}
+
+func (s *Server) getStoreManager() (*store.Manager, error) {
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
+
+	if s.storeManager != nil {
+		return s.storeManager, nil
+	}
+
+	storeManager, err := store.NewManager(s.config.DataFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize store manager: %w", err)
+	}
+
+	s.storeManager = storeManager
+	return s.storeManager, nil
 }

@@ -157,3 +157,44 @@ type EmbedSearchResult struct {
 	ContentType string  `json:"content_type,omitempty"`
 	PageLabel   string  `json:"page_label,omitempty"`
 }
+
+// EmbedIndexDirectoryInput represents input for the embed_index_directory tool
+type EmbedIndexDirectoryInput struct {
+	StoreName       string   `json:"store_name" jsonschema:"name of the embedding store"`
+	Directories     []string `json:"directories" jsonschema:"list of directory paths to index"`
+	ExcludePatterns []string `json:"exclude_patterns,omitempty" jsonschema:"regex patterns to exclude files"`
+	Model           string   `json:"model,omitempty" jsonschema:"embedding model (default: gemini-embedding-2-preview)"`
+	ChunkSize       int      `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000)"`
+	ChunkOverlap    int      `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200)"`
+	Dimension       int      `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768)"`
+}
+
+// EmbedIndexDirectoryOutput represents output from the embed_index_directory tool
+type EmbedIndexDirectoryOutput struct {
+	Success           bool   `json:"success"`
+	TotalChunks       int    `json:"total_chunks"`
+	IndexedFiles      int    `json:"indexed_files"`
+	SkippedFiles      int    `json:"skipped_files"`
+	NewFiles          int    `json:"new_files"`
+	UpdatedFiles      int    `json:"updated_files"`
+	MultimodalFiles   int    `json:"multimodal_files"`
+	SkippedMultimodal int    `json:"skipped_multimodal"`
+	Error             string `json:"error,omitempty"`
+}
+
+// UploadDirectoryInput represents input for the upload_directory tool
+type UploadDirectoryInput struct {
+	StoreName       string   `json:"store_name" jsonschema:"name of the File Search Store"`
+	Directories     []string `json:"directories" jsonschema:"list of directory paths to upload"`
+	ExcludePatterns []string `json:"exclude_patterns,omitempty" jsonschema:"regex patterns to exclude files"`
+	Parallelism     int      `json:"parallelism,omitempty" jsonschema:"number of parallel uploads (default: 5)"`
+}
+
+// UploadDirectoryOutput represents output from the upload_directory tool
+type UploadDirectoryOutput struct {
+	Success  bool   `json:"success"`
+	Uploaded int    `json:"uploaded"`
+	Skipped  int    `json:"skipped"`
+	Failed   int    `json:"failed"`
+	Error    string `json:"error,omitempty"`
+}

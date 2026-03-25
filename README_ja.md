@@ -341,7 +341,7 @@ ragujuary serve
 
 #### 利用可能な MCP ツール
 
-MCP サーバーは 9 つのツールを公開しています：FileSearch モード 7 つ、Embedding モード 2 つ。
+MCP サーバーは 11 のツールを公開しています：FileSearch モード 8 つ、Embedding モード 3 つ。
 
 ##### `upload` - ファイルをストアにアップロード
 
@@ -481,6 +481,27 @@ File Search Store とそのすべてのドキュメントを削除します。
 {}
 ```
 
+##### `upload_directory` - ディレクトリからファイルをアップロード
+
+ローカルディレクトリからファイルを Gemini File Search Store にアップロードします。再帰的にファイルを検出し、チェックサムで未変更のファイルをスキップし、並列でアップロードします。アップロード前にリモートとローカルキャッシュを同期し、重複を防止します。
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|------|-------------|
+| `store_name` | string | はい | File Search Store の名前 |
+| `directories` | array | はい | アップロードするディレクトリパスのリスト |
+| `exclude_patterns` | array | いいえ | ファイルを除外する正規表現パターン |
+| `parallelism` | integer | いいえ | 並列アップロード数（デフォルト: 5） |
+
+例:
+```json
+{
+  "store_name": "my-docs",
+  "directories": ["/path/to/docs", "/path/to/src"],
+  "exclude_patterns": ["\\.git", "node_modules"],
+  "parallelism": 10
+}
+```
+
 ##### `embed_index` - エンベディングでコンテンツをインデックス
 
 コンテンツをインデックスし、ローカルセマンティック検索を可能にします。テキスト（チャンク分割）とマルチモーダルコンテンツ（画像、PDF、動画、音声を単一ベクトルとして埋め込み）に対応。
@@ -514,6 +535,31 @@ File Search Store とそのすべてのドキュメントを削除します。
   "file_content": "iVBORw0KGgoAAAANSUhEUg...",
   "mime_type": "image/png",
   "is_base64": true
+}
+```
+
+##### `embed_index_directory` - ディレクトリからファイルをエンベディングインデックス
+
+ローカルディレクトリからファイルを検出し、エンベディングでインデックスします。再帰的にファイルを検出し、チェックサムで差分更新を行い、テキスト/マルチモーダルコンテンツをバッチ埋め込みします。
+
+| パラメータ | 型 | 必須 | 説明 |
+|-----------|------|------|-------------|
+| `store_name` | string | はい | エンベディングストアの名前 |
+| `directories` | array | はい | インデックスするディレクトリパスのリスト |
+| `exclude_patterns` | array | いいえ | ファイルを除外する正規表現パターン |
+| `model` | string | いいえ | エンベディングモデル（デフォルト: gemini-embedding-2-preview） |
+| `chunk_size` | integer | いいえ | チャンクサイズ（文字数、デフォルト: 1000） |
+| `chunk_overlap` | integer | いいえ | チャンクオーバーラップ（文字数、デフォルト: 200） |
+| `dimension` | integer | いいえ | エンベディング次元数（デフォルト: 768） |
+
+例:
+```json
+{
+  "store_name": "my-docs",
+  "directories": ["/path/to/docs", "/path/to/src"],
+  "exclude_patterns": ["\\.git", "node_modules"],
+  "chunk_size": 500,
+  "chunk_overlap": 100
 }
 ```
 

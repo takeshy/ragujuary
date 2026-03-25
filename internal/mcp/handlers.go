@@ -15,6 +15,7 @@ import (
 	"github.com/takeshy/ragujuary/internal/gemini"
 	"github.com/takeshy/ragujuary/internal/pdfutil"
 	"github.com/takeshy/ragujuary/internal/rag"
+	"github.com/takeshy/ragujuary/internal/store"
 )
 
 // handleUpload handles the upload tool
@@ -51,9 +52,9 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 		content = []byte(input.FileContent)
 	}
 
-	// Calculate checksum
+	// Calculate checksum (raw hex, consistent with Uploader)
 	hash := sha256.Sum256(content)
-	checksum := "sha256:" + hex.EncodeToString(hash[:])
+	checksum := hex.EncodeToString(hash[:])
 
 	// Check for existing document with same display name
 	existingDoc, err := s.geminiClient.FindDocumentByDisplayName(resolvedName, input.FileName)
@@ -63,8 +64,8 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 	}
 
 	if existingDoc != nil {
-		// Check if checksum matches
-		existingChecksum := gemini.GetDocumentChecksum(existingDoc)
+		// Check if checksum matches (normalize prefix for backward compat)
+		existingChecksum := strings.TrimPrefix(gemini.GetDocumentChecksum(existingDoc), "sha256:")
 		if existingChecksum == checksum {
 			// Same content, skip upload
 			output.Success = true
@@ -578,4 +579,195 @@ func (s *Server) handleEmbedQuery(ctx context.Context, req *mcp.CallToolRequest,
 			&mcp.TextContent{Text: textBuilder.String()},
 		},
 	}, output, nil
+}
+
+// handleEmbedIndexDirectory handles the embed_index_directory tool
+func (s *Server) handleEmbedIndexDirectory(ctx context.Context, req *mcp.CallToolRequest, input EmbedIndexDirectoryInput) (*mcp.CallToolResult, EmbedIndexDirectoryOutput, error) {
+	output := EmbedIndexDirectoryOutput{}
+
+	if len(input.Directories) == 0 {
+		return nil, output, fmt.Errorf("directories is required and must not be empty")
+	}
+
+	storeName, err := s.getStoreName(input.StoreName)
+	if err != nil {
+		return nil, output, err
+	}
+
+	config := rag.DefaultConfig()
+	if input.Model != "" {
+		config.Model = input.Model
+	}
+	if input.ChunkSize > 0 {
+		config.ChunkSize = input.ChunkSize
+	}
+	if input.ChunkOverlap > 0 {
+		config.ChunkOverlap = input.ChunkOverlap
+	}
+	if input.Dimension > 0 {
+		config.Dimension = input.Dimension
+	}
+
+	result, err := s.ragEngine.Index(input.Directories, input.ExcludePatterns, storeName, config)
+	if err != nil {
+		output.Error = err.Error()
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
+			},
+		}, output, nil
+	}
+
+	output.Success = true
+	output.TotalChunks = result.TotalChunks
+	output.IndexedFiles = result.IndexedFiles
+	output.SkippedFiles = result.SkippedFiles
+	output.NewFiles = result.NewFiles
+	output.UpdatedFiles = result.UpdatedFiles
+	output.MultimodalFiles = result.MultimodalFiles
+	output.SkippedMultimodal = result.SkippedMultimodal
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf("Indexed %d files (%d chunks). New: %d, Updated: %d, Skipped: %d, Multimodal: %d",
+				output.IndexedFiles, output.TotalChunks, output.NewFiles, output.UpdatedFiles, output.SkippedFiles, output.MultimodalFiles)},
+		},
+	}, output, nil
+}
+
+// handleUploadDirectory handles the upload_directory tool
+func (s *Server) handleUploadDirectory(ctx context.Context, req *mcp.CallToolRequest, input UploadDirectoryInput) (*mcp.CallToolResult, UploadDirectoryOutput, error) {
+	output := UploadDirectoryOutput{}
+
+	if len(input.Directories) == 0 {
+		return nil, output, fmt.Errorf("directories is required and must not be empty")
+	}
+
+	storeName, err := s.getStoreName(input.StoreName)
+	if err != nil {
+		return nil, output, err
+	}
+
+	storeManager, err := s.getStoreManager()
+	if err != nil {
+		return nil, output, err
+	}
+
+	// Resolve store name (store must exist)
+	_, remoteStore, err := s.geminiClient.ResolveStoreName(storeName)
+	if err != nil {
+		return nil, output, fmt.Errorf("store '%s' not found: %w", storeName, err)
+	}
+	localStoreName := strings.TrimPrefix(remoteStore.Name, "fileSearchStores/")
+
+	// Ensure local store exists
+	storeManager.GetOrCreateStore(localStoreName)
+
+	// Discover files
+	files, err := fileutil.DiscoverFiles(input.Directories, input.ExcludePatterns)
+	if err != nil {
+		output.Error = err.Error()
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Failed to discover files: %v", err)},
+			},
+		}, output, nil
+	}
+
+	if len(files) == 0 {
+		output.Success = true
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: "No files found in specified directories"},
+			},
+		}, output, nil
+	}
+
+	remoteDocs, err := s.geminiClient.ListAllDocuments(localStoreName)
+	if err != nil {
+		output.Error = err.Error()
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Failed to list remote documents: %v", err)},
+			},
+		}, output, nil
+	}
+	s.syncRemoteDocumentsToLocalStore(storeManager, localStoreName, remoteDocs)
+
+	// Create uploader and upload files
+	parallelism := input.Parallelism
+	if parallelism <= 0 {
+		parallelism = 5
+	}
+	uploader := gemini.NewUploader(s.geminiClient, storeManager, localStoreName, parallelism)
+
+	results := uploader.UploadFiles(files, nil)
+
+	// Tally results
+	for _, r := range results {
+		if r.Error != nil {
+			output.Failed++
+		} else if r.Skipped {
+			output.Skipped++
+		} else {
+			output.Uploaded++
+		}
+	}
+
+	// Save store data
+	if err := storeManager.Save(); err != nil {
+		output.Error = fmt.Sprintf("uploads completed but failed to save store data: %v", err)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: output.Error},
+			},
+		}, output, nil
+	}
+
+	output.Success = output.Failed == 0
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf("Upload complete. Uploaded: %d, Skipped: %d, Failed: %d",
+				output.Uploaded, output.Skipped, output.Failed)},
+		},
+	}, output, nil
+}
+
+func (s *Server) syncRemoteDocumentsToLocalStore(storeManager *store.Manager, storeName string, docs []gemini.FileSearchDocument) {
+	remotePaths := make(map[string]struct{}, len(docs))
+
+	for _, doc := range docs {
+		if doc.DisplayName == "" {
+			continue
+		}
+		remotePaths[doc.DisplayName] = struct{}{}
+
+		// Normalize checksum: handleUpload stores "sha256:<hex>" but
+		// Uploader/CalculateChecksum uses raw hex. Strip the prefix so
+		// the local cache always matches the format Uploader expects.
+		checksum := gemini.GetDocumentChecksum(&doc)
+		checksum = strings.TrimPrefix(checksum, "sha256:")
+
+		// Merge with existing local metadata to preserve Size/UploadedAt
+		meta := store.FileMetadata{
+			LocalPath:  doc.DisplayName,
+			RemoteID:   doc.Name,
+			RemoteName: doc.DisplayName,
+			Checksum:   checksum,
+			MimeType:   doc.MimeType,
+		}
+		if existing, ok := storeManager.GetFileByPath(storeName, doc.DisplayName); ok {
+			meta.Size = existing.Size
+			meta.UploadedAt = existing.UploadedAt
+		}
+		storeManager.AddFile(storeName, meta)
+	}
+
+	for _, meta := range storeManager.GetAllFiles(storeName) {
+		if _, ok := remotePaths[meta.LocalPath]; ok {
+			continue
+		}
+		storeManager.RemoveFile(storeName, meta.LocalPath)
+	}
 }

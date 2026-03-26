@@ -334,6 +334,12 @@ ragujuary serve --transport sse --port 8080 --serve-api-key mysecretkey
 
 # Start stdio server (for Claude Desktop local integration)
 ragujuary serve
+
+# Restrict to specific stores (reduces unnecessary API calls)
+ragujuary serve --stores mystore1,mystore2
+
+# Single store mode (store_name becomes optional in all tools)
+ragujuary serve --stores mystore
 ```
 
 #### Claude Desktop Configuration
@@ -356,248 +362,94 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 #### Available MCP Tools
 
-The MCP server exposes 11 tools: 8 for FileSearch mode and 3 for Embedding mode.
+The MCP server exposes 8 unified tools. Each tool auto-detects the store type (Embedding or FileSearch) by store name.
 
-##### `upload` - Upload a file to a store
+##### `upload` - Upload/index a file
 
-Upload a single file to a Gemini File Search Store. Provide file content directly.
+Upload a file to a store. Embedding stores index content locally; FileSearch stores upload to Gemini cloud. For multimodal content (image/PDF/video/audio), set `mime_type` and `is_base64=true`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `store_name` | string | Yes | Name of the File Search Store |
+| `store_name` | string | Yes | Name of the store |
 | `file_name` | string | Yes | File name or path for the uploaded file |
 | `file_content` | string | Yes | File content (plain text or base64 encoded) |
-| `is_base64` | boolean | No | Set to true if file_content is base64 encoded (for binary files like PDF, images) |
+| `is_base64` | boolean | No | Set to true if file_content is base64 encoded |
+| `mime_type` | string | No | MIME type for binary content (embedding stores only) |
+| `chunk_size` | integer | No | Chunk size in characters (default: 1000, embedding stores only) |
+| `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200, embedding stores only) |
+| `dimension` | integer | No | Embedding dimensionality (default: 768, embedding stores only) |
 
-Example (text file):
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "README.md",
-  "file_content": "# My Document\n\nThis is the content."
-}
-```
+##### `query` - Query documents
 
-Example (binary file):
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "document.pdf",
-  "file_content": "JVBERi0xLjQK...",
-  "is_base64": true
-}
-```
-
-##### `query` - Query documents (RAG)
-
-Query documents using natural language with semantic search.
+Query documents using natural language. Embedding stores use cosine similarity search; FileSearch stores use Gemini's grounded generation with citations.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `store_name` | string | No* | Name of the File Search Store |
-| `store_names` | array | No* | Names of multiple File Search Stores to query |
+| `store_name` | string | No* | Name of the store |
+| `store_names` | array | No* | Names of multiple stores to query |
 | `question` | string | Yes | The question to ask about your documents |
-| `model` | string | No | Model to use (default: gemini-3-flash-preview) |
-| `metadata_filter` | string | No | Metadata filter expression |
-| `show_citations` | boolean | No | Include citation details in response |
+| `model` | string | No | Model to use (default: gemini-3-flash-preview for FileSearch) |
+| `metadata_filter` | string | No | Metadata filter expression (FileSearch only) |
+| `show_citations` | boolean | No | Include citation details (FileSearch only) |
+| `top_k` | integer | No | Number of top results (default: 5, embedding stores only) |
+| `min_score` | number | No | Minimum similarity score (default: 0.3, embedding stores only) |
 
 *Either `store_name` or `store_names` must be provided.
 
-Example (single store):
-```json
-{
-  "store_name": "my-docs",
-  "question": "How does the authentication system work?",
-  "model": "gemini-2.5-flash",
-  "show_citations": true
-}
-```
-
-Example (multiple stores):
-```json
-{
-  "store_names": ["docs-store", "api-store"],
-  "question": "Search across all documentation"
-}
-```
-
 ##### `list` - List documents in a store
 
-List all documents in a File Search Store with optional filtering.
+List all documents in a store with optional filtering. Auto-detects store type.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `store_name` | string | Yes | Name of the store to list files from |
 | `pattern` | string | No | Regex pattern to filter results |
 
-Example:
-```json
-{
-  "store_name": "my-docs",
-  "pattern": "\\.go$"
-}
-```
-
 ##### `delete` - Delete a file from a store
 
-Delete a single file from a File Search Store by file name.
+Delete a file from a store by file name. Auto-detects store type.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `store_name` | string | Yes | Name of the store |
 | `file_name` | string | Yes | File name to delete |
 
-Example:
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "README.md"
-}
-```
-
 ##### `create_store` - Create a new store
 
-Create a new File Search Store.
+Create a new store. Set `type` to choose between embedding and FileSearch.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `store_name` | string | Yes | Display name for the new store |
-
-Example:
-```json
-{
-  "store_name": "my-new-store"
-}
-```
+| `type` | string | No | `embed` for embedding store, `filesearch` (default) for FileSearch store |
 
 ##### `delete_store` - Delete a store
 
-Delete an entire File Search Store and all its documents.
+Delete an entire store and all its data. Auto-detects store type.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `store_name` | string | Yes | Name of the store to delete |
 
-Example:
-```json
-{
-  "store_name": "my-docs"
-}
-```
-
 ##### `list_stores` - List all stores
 
-List all available File Search Stores.
+List all available stores (both Embedding and FileSearch).
 
 No parameters required.
 
-Example:
-```json
-{}
-```
+##### `upload_directory` - Upload/index files from directories
 
-##### `upload_directory` - Upload files from directories
-
-Upload files from local directories to a Gemini File Search Store. Recursively discovers files, skips unchanged files by checksum, and uploads in parallel. Syncs local cache with remote state before uploading to prevent duplicates.
+Upload/index files from directories to a store. Auto-detects store type: embedding stores index locally, FileSearch stores upload to Gemini cloud. Recursively discovers files and skips unchanged files.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `store_name` | string | Yes | Name of the File Search Store |
-| `directories` | array | Yes | List of directory paths to upload |
+| `store_name` | string | Yes | Name of the store |
+| `directories` | array | Yes | List of directory paths |
 | `exclude_patterns` | array | No | Regex patterns to exclude files |
-| `parallelism` | integer | No | Number of parallel uploads (default: 5) |
-
-Example:
-```json
-{
-  "store_name": "my-docs",
-  "directories": ["/path/to/docs", "/path/to/src"],
-  "exclude_patterns": ["\\.git", "node_modules"],
-  "parallelism": 10
-}
-```
-
-##### `embed_index` - Index content with embeddings
-
-Index content for local semantic search. Supports text (chunked) and multimodal content (images, PDF, video, audio). PDFs over 6 pages and audio/video exceeding duration limits are automatically split.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `store_name` | string | Yes | Name of the embedding store |
-| `file_name` | string | Yes | File name or identifier |
-| `file_content` | string | Yes | Text content or base64-encoded binary |
-| `model` | string | No | Embedding model (default: gemini-embedding-2-preview) |
-| `chunk_size` | integer | No | Chunk size in characters (default: 1000, text only) |
-| `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200, text only) |
-| `dimension` | integer | No | Embedding dimensionality (default: 768) |
-| `mime_type` | string | No | MIME type for binary content (e.g. `image/png`, `application/pdf`) |
-| `is_base64` | boolean | No | Set to true if file_content is base64-encoded binary |
-
-Example (text):
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "notes.md",
-  "file_content": "# Meeting Notes\n\nDiscussed the new authentication system..."
-}
-```
-
-Example (image):
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "diagram.png",
-  "file_content": "iVBORw0KGgoAAAANSUhEUg...",
-  "mime_type": "image/png",
-  "is_base64": true
-}
-```
-
-##### `embed_index_directory` - Index files from directories with embeddings
-
-Index files from local directories using embeddings for local semantic search. Recursively discovers files, computes checksums for incremental updates, and batch-embeds text/multimodal content.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `store_name` | string | Yes | Name of the embedding store |
-| `directories` | array | Yes | List of directory paths to index |
-| `exclude_patterns` | array | No | Regex patterns to exclude files |
-| `model` | string | No | Embedding model (default: gemini-embedding-2-preview) |
-| `chunk_size` | integer | No | Chunk size in characters (default: 1000) |
-| `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200) |
-| `dimension` | integer | No | Embedding dimensionality (default: 768) |
-
-Example:
-```json
-{
-  "store_name": "my-docs",
-  "directories": ["/path/to/docs", "/path/to/src"],
-  "exclude_patterns": ["\\.git", "node_modules"],
-  "chunk_size": 500,
-  "chunk_overlap": 100
-}
-```
-
-##### `embed_query` - Search embeddings
-
-Query the local embedding store using semantic search.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `store_name` | string | Yes | Name of the embedding store |
-| `question` | string | Yes | The question to search for |
-| `top_k` | integer | No | Number of top results (default: 5) |
-| `min_score` | number | No | Minimum similarity score (default: 0.3) |
-| `model` | string | No | Embedding model (default: gemini-embedding-2-preview) |
-
-Example:
-```json
-{
-  "store_name": "my-docs",
-  "question": "What was discussed about authentication?",
-  "top_k": 3
-}
-```
+| `parallelism` | integer | No | Number of parallel uploads (default: 5, FileSearch only) |
+| `chunk_size` | integer | No | Chunk size in characters (default: 1000, embedding stores only) |
+| `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200, embedding stores only) |
+| `dimension` | integer | No | Embedding dimensionality (default: 768, embedding stores only) |
 
 #### HTTP Authentication
 

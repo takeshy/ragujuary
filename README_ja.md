@@ -319,6 +319,12 @@ ragujuary serve --transport sse --port 8080 --serve-api-key mysecretkey
 
 # stdio サーバーを起動（Claude Desktop ローカル連携用）
 ragujuary serve
+
+# 特定のストアのみに制限（不要な API 呼び出しを削減）
+ragujuary serve --stores mystore1,mystore2
+
+# 単一ストアモード（全ツールで store_name が省略可能に）
+ragujuary serve --stores mystore
 ```
 
 #### Claude Desktop 設定
@@ -341,248 +347,94 @@ ragujuary serve
 
 #### 利用可能な MCP ツール
 
-MCP サーバーは 11 のツールを公開しています：FileSearch モード 8 つ、Embedding モード 3 つ。
+MCP サーバーは 8 つの統合ツールを公開しています。各ツールはストア名からストアの種類（Embedding / FileSearch）を自動判別します。
 
-##### `upload` - ファイルをストアにアップロード
+##### `upload` - ファイルをアップロード/インデックス
 
-単一ファイルを Gemini File Search Store にアップロードします。ファイルの内容を直接渡します。
+ファイルをストアにアップロードします。Embedding ストアではローカルにインデックス、FileSearch ストアでは Gemini クラウドにアップロードします。マルチモーダルコンテンツ（画像/PDF/動画/音声）の場合は `mime_type` と `is_base64=true` を設定。
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|------|------|-------------|
-| `store_name` | string | はい | File Search Store の名前 |
+| `store_name` | string | はい | ストアの名前 |
 | `file_name` | string | はい | アップロードするファイル名またはパス |
 | `file_content` | string | はい | ファイルの内容（プレーンテキストまたは base64 エンコード） |
-| `is_base64` | boolean | いいえ | file_content が base64 エンコードの場合は true（PDF、画像などのバイナリファイル用） |
+| `is_base64` | boolean | いいえ | file_content が base64 エンコードの場合は true |
+| `mime_type` | string | いいえ | バイナリコンテンツの MIME タイプ（Embedding ストアのみ） |
+| `chunk_size` | integer | いいえ | チャンクサイズ（文字数、デフォルト: 1000、Embedding ストアのみ） |
+| `chunk_overlap` | integer | いいえ | チャンクオーバーラップ（文字数、デフォルト: 200、Embedding ストアのみ） |
+| `dimension` | integer | いいえ | エンベディング次元数（デフォルト: 768、Embedding ストアのみ） |
 
-例（テキストファイル）:
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "README.md",
-  "file_content": "# My Document\n\nThis is the content."
-}
-```
+##### `query` - ドキュメントを検索
 
-例（バイナリファイル）:
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "document.pdf",
-  "file_content": "JVBERi0xLjQK...",
-  "is_base64": true
-}
-```
-
-##### `query` - ドキュメントを検索（RAG）
-
-自然言語でセマンティック検索を実行します。
+自然言語でドキュメントを検索します。Embedding ストアではコサイン類似度検索、FileSearch ストアでは Gemini の引用付き生成を使用します。
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|------|------|-------------|
-| `store_name` | string | いいえ* | File Search Store の名前 |
-| `store_names` | array | いいえ* | 複数の File Search Store の名前 |
+| `store_name` | string | いいえ* | ストアの名前 |
+| `store_names` | array | いいえ* | 複数のストアの名前 |
 | `question` | string | はい | ドキュメントに対する質問 |
-| `model` | string | いいえ | 使用するモデル（デフォルト: gemini-3-flash-preview） |
-| `metadata_filter` | string | いいえ | メタデータフィルタ式 |
-| `show_citations` | boolean | いいえ | 引用の詳細を含める |
+| `model` | string | いいえ | 使用するモデル（デフォルト: gemini-3-flash-preview、FileSearch のみ） |
+| `metadata_filter` | string | いいえ | メタデータフィルタ式（FileSearch のみ） |
+| `show_citations` | boolean | いいえ | 引用の詳細を含める（FileSearch のみ） |
+| `top_k` | integer | いいえ | 上位結果数（デフォルト: 5、Embedding ストアのみ） |
+| `min_score` | number | いいえ | 最小類似度スコア（デフォルト: 0.3、Embedding ストアのみ） |
 
 *`store_name` または `store_names` のいずれかが必要です。
 
-例（単一ストア）:
-```json
-{
-  "store_name": "my-docs",
-  "question": "認証システムはどのように機能しますか？",
-  "model": "gemini-2.5-flash",
-  "show_citations": true
-}
-```
-
-例（複数ストア）:
-```json
-{
-  "store_names": ["docs-store", "api-store"],
-  "question": "全ドキュメントを横断検索"
-}
-```
-
 ##### `list` - ストア内のドキュメントを一覧表示
 
-File Search Store 内のドキュメントをフィルタリングして一覧表示します。
+ストア内のドキュメントをフィルタリングして一覧表示します。ストアの種類を自動判別します。
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|------|------|-------------|
 | `store_name` | string | はい | ストアの名前 |
 | `pattern` | string | いいえ | 結果をフィルタする正規表現パターン |
 
-例:
-```json
-{
-  "store_name": "my-docs",
-  "pattern": "\\.go$"
-}
-```
-
 ##### `delete` - ファイルを削除
 
-ファイル名を指定してストアからファイルを削除します。
+ファイル名を指定してストアからファイルを削除します。ストアの種類を自動判別します。
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|------|------|-------------|
 | `store_name` | string | はい | ストアの名前 |
 | `file_name` | string | はい | 削除するファイル名 |
 
-例:
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "README.md"
-}
-```
-
 ##### `create_store` - ストアを作成
 
-新しい File Search Store を作成します。
+新しいストアを作成します。`type` で Embedding と FileSearch を選択できます。
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|------|------|-------------|
 | `store_name` | string | はい | 新しいストアの表示名 |
-
-例:
-```json
-{
-  "store_name": "my-new-store"
-}
-```
+| `type` | string | いいえ | `embed` で Embedding ストア、`filesearch`（デフォルト）で FileSearch ストア |
 
 ##### `delete_store` - ストアを削除
 
-File Search Store とそのすべてのドキュメントを削除します。
+ストアとそのすべてのデータを削除します。ストアの種類を自動判別します。
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|------|------|-------------|
 | `store_name` | string | はい | 削除するストアの名前 |
 
-例:
-```json
-{
-  "store_name": "my-docs"
-}
-```
-
 ##### `list_stores` - ストア一覧を取得
 
-利用可能なすべての File Search Store を一覧表示します。
+利用可能なすべてのストア（Embedding と FileSearch の両方）を一覧表示します。
 
 パラメータは不要です。
 
-例:
-```json
-{}
-```
+##### `upload_directory` - ディレクトリからファイルをアップロード/インデックス
 
-##### `upload_directory` - ディレクトリからファイルをアップロード
-
-ローカルディレクトリからファイルを Gemini File Search Store にアップロードします。再帰的にファイルを検出し、チェックサムで未変更のファイルをスキップし、並列でアップロードします。アップロード前にリモートとローカルキャッシュを同期し、重複を防止します。
+ディレクトリからファイルをストアにアップロード/インデックスします。ストアの種類を自動判別：Embedding ストアではローカルにインデックス、FileSearch ストアでは Gemini クラウドにアップロードします。再帰的にファイルを検出し、未変更のファイルをスキップします。
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|------|------|-------------|
-| `store_name` | string | はい | File Search Store の名前 |
-| `directories` | array | はい | アップロードするディレクトリパスのリスト |
+| `store_name` | string | はい | ストアの名前 |
+| `directories` | array | はい | ディレクトリパスのリスト |
 | `exclude_patterns` | array | いいえ | ファイルを除外する正規表現パターン |
-| `parallelism` | integer | いいえ | 並列アップロード数（デフォルト: 5） |
-
-例:
-```json
-{
-  "store_name": "my-docs",
-  "directories": ["/path/to/docs", "/path/to/src"],
-  "exclude_patterns": ["\\.git", "node_modules"],
-  "parallelism": 10
-}
-```
-
-##### `embed_index` - エンベディングでコンテンツをインデックス
-
-コンテンツをインデックスし、ローカルセマンティック検索を可能にします。テキスト（チャンク分割）とマルチモーダルコンテンツ（画像、PDF、動画、音声を単一ベクトルとして埋め込み）に対応。
-
-| パラメータ | 型 | 必須 | 説明 |
-|-----------|------|------|-------------|
-| `store_name` | string | はい | エンベディングストアの名前 |
-| `file_name` | string | はい | ファイル名または識別子 |
-| `file_content` | string | はい | テキストコンテンツまたはbase64エンコードされたバイナリ |
-| `model` | string | いいえ | エンベディングモデル（デフォルト: gemini-embedding-2-preview） |
-| `chunk_size` | integer | いいえ | チャンクサイズ（文字数、デフォルト: 1000、テキストのみ） |
-| `chunk_overlap` | integer | いいえ | チャンクオーバーラップ（文字数、デフォルト: 200、テキストのみ） |
-| `dimension` | integer | いいえ | エンベディング次元数（デフォルト: 768） |
-| `mime_type` | string | いいえ | バイナリコンテンツのMIMEタイプ（例: `image/png`、`application/pdf`） |
-| `is_base64` | boolean | いいえ | file_content が base64 エンコードされたバイナリの場合 true |
-
-例（テキスト）:
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "notes.md",
-  "file_content": "# 会議メモ\n\n新しい認証システムについて議論しました..."
-}
-```
-
-例（画像）:
-```json
-{
-  "store_name": "my-docs",
-  "file_name": "diagram.png",
-  "file_content": "iVBORw0KGgoAAAANSUhEUg...",
-  "mime_type": "image/png",
-  "is_base64": true
-}
-```
-
-##### `embed_index_directory` - ディレクトリからファイルをエンベディングインデックス
-
-ローカルディレクトリからファイルを検出し、エンベディングでインデックスします。再帰的にファイルを検出し、チェックサムで差分更新を行い、テキスト/マルチモーダルコンテンツをバッチ埋め込みします。
-
-| パラメータ | 型 | 必須 | 説明 |
-|-----------|------|------|-------------|
-| `store_name` | string | はい | エンベディングストアの名前 |
-| `directories` | array | はい | インデックスするディレクトリパスのリスト |
-| `exclude_patterns` | array | いいえ | ファイルを除外する正規表現パターン |
-| `model` | string | いいえ | エンベディングモデル（デフォルト: gemini-embedding-2-preview） |
-| `chunk_size` | integer | いいえ | チャンクサイズ（文字数、デフォルト: 1000） |
-| `chunk_overlap` | integer | いいえ | チャンクオーバーラップ（文字数、デフォルト: 200） |
-| `dimension` | integer | いいえ | エンベディング次元数（デフォルト: 768） |
-
-例:
-```json
-{
-  "store_name": "my-docs",
-  "directories": ["/path/to/docs", "/path/to/src"],
-  "exclude_patterns": ["\\.git", "node_modules"],
-  "chunk_size": 500,
-  "chunk_overlap": 100
-}
-```
-
-##### `embed_query` - エンベディング検索
-
-ローカルエンベディングストアに対してセマンティック検索を実行します。
-
-| パラメータ | 型 | 必須 | 説明 |
-|-----------|------|------|-------------|
-| `store_name` | string | はい | エンベディングストアの名前 |
-| `question` | string | はい | 検索する質問 |
-| `top_k` | integer | いいえ | 上位結果数（デフォルト: 5） |
-| `min_score` | number | いいえ | 最小類似度スコア（デフォルト: 0.3） |
-| `model` | string | いいえ | エンベディングモデル（デフォルト: gemini-embedding-2-preview） |
-
-例:
-```json
-{
-  "store_name": "my-docs",
-  "question": "認証について何が議論されましたか？",
-  "top_k": 3
-}
-```
+| `parallelism` | integer | いいえ | 並列アップロード数（デフォルト: 5、FileSearch のみ） |
+| `chunk_size` | integer | いいえ | チャンクサイズ（文字数、デフォルト: 1000、Embedding ストアのみ） |
+| `chunk_overlap` | integer | いいえ | チャンクオーバーラップ（文字数、デフォルト: 200、Embedding ストアのみ） |
+| `dimension` | integer | いいえ | エンベディング次元数（デフォルト: 768、Embedding ストアのみ） |
 
 #### HTTP 認証
 

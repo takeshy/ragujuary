@@ -154,6 +154,6 @@ Embedding stores: `~/.ragujuary-embed/<store-name>/` (index.json + vectors.bin)
 | Chunking | Gemini automatic | Custom (paragraph/sentence-aware) |
 | Query | GenerateContent + FileSearch tool | Embed query + vector search |
 | CLI commands | upload/query/list/delete | embed index/query/list/delete/clear |
-| MCP tools | upload/query/list/delete/create_store/delete_store/list_stores | embed_index/embed_query |
+| MCP tools | upload/query/list/delete/create_store/delete_store/list_stores/upload_directory (unified, auto-detect by store name) ||
 | Incremental | SHA256 checksum | SHA256 checksum |
 | Model change | N/A | Requires full re-index |

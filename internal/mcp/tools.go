@@ -1,11 +1,15 @@
 package mcp
 
-// UploadInput represents input for the upload tool
+// UploadInput represents input for the upload tool (works for both FileSearch and Embedding stores)
 type UploadInput struct {
-	StoreName   string `json:"store_name" jsonschema:"name of the File Search Store"`
-	FileName    string `json:"file_name" jsonschema:"file name or path to use for the uploaded file"`
-	FileContent string `json:"file_content" jsonschema:"file content (base64 encoded for binary files, plain text for text files)"`
-	IsBase64    bool   `json:"is_base64,omitempty" jsonschema:"set to true if file_content is base64 encoded"`
+	StoreName    string `json:"store_name" jsonschema:"name of the store"`
+	FileName     string `json:"file_name" jsonschema:"file name or path for the uploaded file"`
+	FileContent  string `json:"file_content" jsonschema:"file content (base64 encoded for binary files, plain text for text files)"`
+	IsBase64     bool   `json:"is_base64,omitempty" jsonschema:"set to true if file_content is base64 encoded"`
+	MIMEType     string `json:"mime_type,omitempty" jsonschema:"MIME type for binary content (e.g. image/png, application/pdf) - embedding stores only"`
+	ChunkSize    int    `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000) - embedding stores only"`
+	ChunkOverlap int    `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200) - embedding stores only"`
+	Dimension    int    `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768) - embedding stores only"`
 }
 
 // UploadOutput represents output from the upload tool
@@ -15,14 +19,16 @@ type UploadOutput struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// QueryInput represents input for the query tool
+// QueryInput represents input for the query tool (works for both FileSearch and Embedding stores)
 type QueryInput struct {
 	Question       string   `json:"question" jsonschema:"the question to ask about your documents"`
-	StoreName      string   `json:"store_name,omitempty" jsonschema:"name of the File Search Store (use store_name or store_names)"`
-	StoreNames     []string `json:"store_names,omitempty" jsonschema:"names of multiple File Search Stores to query"`
-	Model          string   `json:"model,omitempty" jsonschema:"model to use (default: gemini-3-flash-preview)"`
-	MetadataFilter string   `json:"metadata_filter,omitempty" jsonschema:"metadata filter expression"`
-	ShowCitations  bool     `json:"show_citations,omitempty" jsonschema:"include citation details in response"`
+	StoreName      string   `json:"store_name" jsonschema:"name of the store (required unless store_names is provided)"`
+	StoreNames     []string `json:"store_names,omitempty" jsonschema:"names of multiple stores to query (alternative to store_name)"`
+	Model          string   `json:"model,omitempty" jsonschema:"model to use (default: gemini-3-flash-preview for FileSearch)"`
+	MetadataFilter string   `json:"metadata_filter,omitempty" jsonschema:"metadata filter expression - FileSearch only"`
+	ShowCitations  bool     `json:"show_citations,omitempty" jsonschema:"include citation details - FileSearch only"`
+	TopK           int      `json:"top_k,omitempty" jsonschema:"number of top results (default: 5) - embedding stores only"`
+	MinScore       float64  `json:"min_score,omitempty" jsonschema:"minimum similarity score (default: 0.3) - embedding stores only"`
 }
 
 // QueryOutput represents output from the query tool
@@ -73,7 +79,8 @@ type DeleteOutput struct {
 
 // CreateStoreInput represents input for the create_store tool
 type CreateStoreInput struct {
-	StoreName string `json:"store_name" jsonschema:"display name for the new File Search Store"`
+	StoreName string `json:"store_name" jsonschema:"display name for the new store"`
+	Type      string `json:"type,omitempty" jsonschema:"store type: 'embed' for embedding store, 'filesearch' for FileSearch store (default: filesearch)"`
 }
 
 // CreateStoreOutput represents output from the create_store tool
@@ -105,7 +112,7 @@ type ListStoresOutput struct {
 	Total  int         `json:"total"`
 }
 
-// StoreInfo represents information about a File Search Store
+// StoreInfo represents information about a store
 type StoreInfo struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
@@ -113,81 +120,15 @@ type StoreInfo struct {
 	UpdateTime  string `json:"update_time,omitempty"`
 }
 
-// EmbedIndexInput represents input for the embed_index tool
-type EmbedIndexInput struct {
-	StoreName    string `json:"store_name" jsonschema:"name of the embedding store"`
-	FileName     string `json:"file_name" jsonschema:"file name or identifier for the content"`
-	FileContent  string `json:"file_content" jsonschema:"text content to index (or base64-encoded binary if is_base64 is true)"`
-	Model        string `json:"model,omitempty" jsonschema:"embedding model (default: gemini-embedding-2-preview)"`
-	ChunkSize    int    `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000)"`
-	ChunkOverlap int    `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200)"`
-	Dimension    int    `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768)"`
-	MIMEType     string `json:"mime_type,omitempty" jsonschema:"MIME type for binary content (e.g. image/png, application/pdf, video/mp4)"`
-	IsBase64     bool   `json:"is_base64,omitempty" jsonschema:"set to true if file_content is base64 encoded binary data"`
-}
-
-// EmbedIndexOutput represents output from the embed_index tool
-type EmbedIndexOutput struct {
-	Success  bool   `json:"success"`
-	FileName string `json:"file_name"`
-	Chunks   int    `json:"chunks"`
-	Error    string `json:"error,omitempty"`
-}
-
-// EmbedQueryInput represents input for the embed_query tool
-type EmbedQueryInput struct {
-	Question  string  `json:"question" jsonschema:"the question to search for"`
-	StoreName string  `json:"store_name" jsonschema:"name of the embedding store"`
-	TopK      int     `json:"top_k,omitempty" jsonschema:"number of top results (default: 5)"`
-	MinScore  float64 `json:"min_score,omitempty" jsonschema:"minimum similarity score (default: 0.3)"`
-	Model     string  `json:"model,omitempty" jsonschema:"embedding model (default: gemini-embedding-2-preview)"`
-}
-
-// EmbedQueryOutput represents output from the embed_query tool
-type EmbedQueryOutput struct {
-	Results []EmbedSearchResult `json:"results"`
-	Total   int                 `json:"total"`
-}
-
-// EmbedSearchResult represents a single embedding search result
-type EmbedSearchResult struct {
-	Text        string  `json:"text"`
-	FilePath    string  `json:"file_path"`
-	Score       float64 `json:"score"`
-	ContentType string  `json:"content_type,omitempty"`
-	PageLabel   string  `json:"page_label,omitempty"`
-}
-
-// EmbedIndexDirectoryInput represents input for the embed_index_directory tool
-type EmbedIndexDirectoryInput struct {
-	StoreName       string   `json:"store_name" jsonschema:"name of the embedding store"`
-	Directories     []string `json:"directories" jsonschema:"list of directory paths to index"`
-	ExcludePatterns []string `json:"exclude_patterns,omitempty" jsonschema:"regex patterns to exclude files"`
-	Model           string   `json:"model,omitempty" jsonschema:"embedding model (default: gemini-embedding-2-preview)"`
-	ChunkSize       int      `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000)"`
-	ChunkOverlap    int      `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200)"`
-	Dimension       int      `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768)"`
-}
-
-// EmbedIndexDirectoryOutput represents output from the embed_index_directory tool
-type EmbedIndexDirectoryOutput struct {
-	Success           bool   `json:"success"`
-	TotalChunks       int    `json:"total_chunks"`
-	IndexedFiles      int    `json:"indexed_files"`
-	SkippedFiles      int    `json:"skipped_files"`
-	NewFiles          int    `json:"new_files"`
-	UpdatedFiles      int    `json:"updated_files"`
-	MultimodalFiles   int    `json:"multimodal_files"`
-	SkippedMultimodal int    `json:"skipped_multimodal"`
-	Error             string `json:"error,omitempty"`
-}
-
 // UploadDirectoryInput represents input for the upload_directory tool
 type UploadDirectoryInput struct {
-	StoreName       string   `json:"store_name" jsonschema:"name of the File Search Store"`
-	Directories     []string `json:"directories" jsonschema:"list of directory paths to upload"`
+	StoreName       string   `json:"store_name" jsonschema:"name of the store"`
+	Directories     []string `json:"directories" jsonschema:"list of directory paths to upload/index"`
 	ExcludePatterns []string `json:"exclude_patterns,omitempty" jsonschema:"regex patterns to exclude files"`
-	Parallelism     int      `json:"parallelism,omitempty" jsonschema:"number of parallel uploads (default: 5)"`
+	Parallelism     int      `json:"parallelism,omitempty" jsonschema:"number of parallel uploads (default: 5) - FileSearch only"`
+	ChunkSize       int      `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000) - embedding stores only"`
+	ChunkOverlap    int      `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200) - embedding stores only"`
+	Dimension       int      `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768) - embedding stores only"`
 }
 
 // UploadDirectoryOutput represents output from the upload_directory tool

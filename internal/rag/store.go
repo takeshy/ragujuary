@@ -130,6 +130,15 @@ func LoadIndex(storeName string) (*RagIndex, []float32, error) {
 	return &index, vectors, nil
 }
 
+// CreateEmptyIndex creates a new empty embedding store
+func CreateEmptyIndex(storeName string) error {
+	index := &RagIndex{
+		Meta:          []ChunkMeta{},
+		FileChecksums: make(map[string]string),
+	}
+	return SaveIndex(storeName, index, nil)
+}
+
 // DeleteIndex removes the entire store directory
 func DeleteIndex(storeName string) error {
 	dir, err := storeDir(storeName)

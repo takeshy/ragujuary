@@ -19,6 +19,7 @@ var (
 	serveAPIKey      string
 	serveEmbedURL    string
 	serveEmbedAPIKey string
+	serveStores      []string
 )
 
 var serveCmd = &cobra.Command{
@@ -64,6 +65,7 @@ func init() {
 	serveCmd.Flags().StringVar(&serveAPIKey, "serve-api-key", "", "API key for HTTP authentication (or RAGUJUARY_SERVE_API_KEY env var)")
 	serveCmd.Flags().StringVar(&serveEmbedURL, "embed-url", "", "OpenAI-compatible embedding API URL (e.g. http://localhost:11434 for Ollama)")
 	serveCmd.Flags().StringVar(&serveEmbedAPIKey, "embed-api-key", "", "API key for OpenAI-compatible embedding APIs (or set RAGUJUARY_EMBED_API_KEY / OPENAI_API_KEY)")
+	serveCmd.Flags().StringSliceVar(&serveStores, "stores", nil, "Restrict to specific stores (comma-separated or repeated)")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -76,10 +78,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Create MCP server config
 	config := mcpserver.ServerConfig{
-		APIKey:      key,
-		EmbedURL:    serveEmbedURL,
-		EmbedAPIKey: getServeEmbeddingAPIKey(),
-		DataFile:    dataFile,
+		APIKey:         key,
+		EmbedURL:       serveEmbedURL,
+		EmbedAPIKey:    getServeEmbeddingAPIKey(),
+		DataFile:       dataFile,
+		AllowedStores:  serveStores,
 	}
 
 	// Create MCP server

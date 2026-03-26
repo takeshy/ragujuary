@@ -18,11 +18,16 @@ import (
 	"github.com/takeshy/ragujuary/internal/store"
 )
 
-// handleUpload handles the upload tool
+// isEmbedStore checks if a store name corresponds to an embedding store
+func isEmbedStore(name string) bool {
+	index, _, err := rag.LoadIndex(name)
+	return err == nil && index != nil
+}
+
+// handleUpload handles the upload tool (auto-detects Embedding or FileSearch store)
 func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, input UploadInput) (*mcp.CallToolResult, UploadOutput, error) {
 	output := UploadOutput{FileName: input.FileName}
 
-	// Validate input
 	if input.FileName == "" {
 		return nil, output, fmt.Errorf("file_name is required")
 	}
@@ -35,13 +40,17 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 		return nil, output, err
 	}
 
-	// Resolve store name (store must exist)
-	resolvedName, _, err := s.geminiClient.ResolveStoreName(storeName)
-	if err != nil {
-		return nil, output, fmt.Errorf("store '%s' not found", storeName)
+	// Embedding store — delegate to embed index
+	if isEmbedStore(storeName) {
+		return s.handleUploadEmbed(ctx, storeName, input)
 	}
 
-	// Decode content
+	// FileSearch store
+	resolvedName, _, err := s.geminiClient.ResolveStoreName(storeName)
+	if err != nil {
+		return nil, output, fmt.Errorf("store '%s' not found (checked both embedding and FileSearch)", storeName)
+	}
+
 	var content []byte
 	if input.IsBase64 {
 		content, err = base64.StdEncoding.DecodeString(input.FileContent)
@@ -52,22 +61,17 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 		content = []byte(input.FileContent)
 	}
 
-	// Calculate checksum (raw hex, consistent with Uploader)
 	hash := sha256.Sum256(content)
 	checksum := hex.EncodeToString(hash[:])
 
-	// Check for existing document with same display name
 	existingDoc, err := s.geminiClient.FindDocumentByDisplayName(resolvedName, input.FileName)
 	if err != nil {
-		// Log error but continue with upload
-		// This is not fatal - we'll just upload the file
+		// Not fatal - continue with upload
 	}
 
 	if existingDoc != nil {
-		// Check if checksum matches (normalize prefix for backward compat)
 		existingChecksum := strings.TrimPrefix(gemini.GetDocumentChecksum(existingDoc), "sha256:")
 		if existingChecksum == checksum {
-			// Same content, skip upload
 			output.Success = true
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
@@ -75,15 +79,11 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 				},
 			}, output, nil
 		}
-
-		// Different content, delete old document first
 		if err := s.geminiClient.DeleteDocument(existingDoc.Name); err != nil {
-			// Log error but continue with upload
-			// Old document might remain, but new one will be uploaded
+			// Continue with upload
 		}
 	}
 
-	// Upload content with checksum metadata
 	checksumPtr := checksum
 	customMetadata := []gemini.CustomMetadata{
 		{Key: "checksum", StringValue: &checksumPtr},
@@ -99,7 +99,6 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 		}, output, nil
 	}
 
-	// Wait for operation to complete
 	if !op.Done {
 		op, err = s.geminiClient.WaitForOperation(op.Name, 2*time.Second)
 		if err != nil {
@@ -124,7 +123,88 @@ func (s *Server) handleUpload(ctx context.Context, req *mcp.CallToolRequest, inp
 	}, output, nil
 }
 
-// handleQuery handles the query tool
+// handleUploadEmbed handles upload to an embedding store (index content)
+func (s *Server) handleUploadEmbed(ctx context.Context, storeName string, input UploadInput) (*mcp.CallToolResult, UploadOutput, error) {
+	output := UploadOutput{FileName: input.FileName}
+
+	config := rag.DefaultConfig()
+	if input.ChunkSize > 0 {
+		config.ChunkSize = input.ChunkSize
+	}
+	if input.ChunkOverlap > 0 {
+		config.ChunkOverlap = input.ChunkOverlap
+	}
+	if input.Dimension > 0 {
+		config.Dimension = input.Dimension
+	}
+
+	// Multimodal path
+	if input.MIMEType != "" && input.IsBase64 {
+		ct := fileutil.ClassifyContent(input.MIMEType)
+		if !fileutil.IsMultimodal(ct) {
+			return nil, output, fmt.Errorf("mime_type %s is not a multimodal type; use plain text indexing instead", input.MIMEType)
+		}
+
+		data, err := base64.StdEncoding.DecodeString(input.FileContent)
+		if err != nil {
+			return nil, output, fmt.Errorf("failed to decode base64 content: %w", err)
+		}
+
+		if err := s.ragEngine.IndexMultimodalContent(storeName, input.FileName, data, input.MIMEType, config); err != nil {
+			output.Error = err.Error()
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
+				},
+			}, output, nil
+		}
+
+		chunks := 1
+		if input.MIMEType == "application/pdf" {
+			if pageCount, err := pdfutil.PageCount(data); err == nil {
+				chunks = (pageCount + pdfutil.DefaultMaxPages - 1) / pdfutil.DefaultMaxPages
+			}
+		} else if idx, _, loadErr := rag.LoadIndex(storeName); loadErr == nil && idx != nil {
+			count := 0
+			for _, m := range idx.Meta {
+				if m.FilePath == input.FileName {
+					count++
+				}
+			}
+			if count > 0 {
+				chunks = count
+			}
+		}
+
+		output.Success = true
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Successfully indexed multimodal '%s' (%s, %d embedding(s))", input.FileName, ct, chunks)},
+			},
+		}, output, nil
+	}
+
+	// Text path
+	if err := s.ragEngine.IndexContent(storeName, input.FileName, input.FileContent, config); err != nil {
+		output.Error = err.Error()
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
+			},
+		}, output, nil
+	}
+
+	chunks := rag.ChunkText(input.FileContent, config.ChunkSize, config.ChunkOverlap)
+	output.Success = true
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf("Successfully indexed '%s' (%d chunks)", input.FileName, len(chunks))},
+		},
+	}, output, nil
+}
+
+// handleQuery handles the query tool (auto-detects Embedding or FileSearch store)
 func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest, input QueryInput) (*mcp.CallToolResult, QueryOutput, error) {
 	output := QueryOutput{}
 
@@ -132,36 +212,42 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest, inpu
 		return nil, output, fmt.Errorf("question is required")
 	}
 
+	names, err := s.getAllowedStoreNames(input.StoreName, input.StoreNames)
+	if err != nil {
+		return nil, output, err
+	}
+
+	embedStoreNames := make([]string, 0, len(names))
+	for _, name := range names {
+		if isEmbedStore(name) {
+			embedStoreNames = append(embedStoreNames, name)
+		}
+	}
+	if len(embedStoreNames) > 1 {
+		return nil, output, fmt.Errorf("query across multiple embedding stores is not supported; requested: %s", strings.Join(embedStoreNames, ", "))
+	}
+	if len(embedStoreNames) == 1 {
+		if len(names) > 1 {
+			return nil, output, fmt.Errorf("cannot mix embedding and FileSearch stores in one query; use a single store")
+		}
+		return s.handleQueryEmbed(ctx, embedStoreNames[0], input)
+	}
+
+	// FileSearch mode
 	model := input.Model
 	if model == "" {
 		model = "gemini-3-flash-preview"
 	}
 
-	// Resolve store names
 	var storeNames []string
-	if len(input.StoreNames) > 0 {
-		// Multiple stores specified
-		for _, name := range input.StoreNames {
-			_, remoteStore, err := s.geminiClient.ResolveStoreName(name)
-			if err != nil {
-				return nil, output, fmt.Errorf("store '%s' not found: %w", name, err)
-			}
-			storeNames = append(storeNames, remoteStore.Name)
-		}
-	} else {
-		// Single store (backward compatible)
-		storeName, err := s.getStoreName(input.StoreName)
+	for _, name := range names {
+		_, remoteStore, err := s.geminiClient.ResolveStoreName(name)
 		if err != nil {
-			return nil, output, err
+			return nil, output, fmt.Errorf("store '%s' not found (checked both embedding and FileSearch)", name)
 		}
-		_, remoteStore, err := s.geminiClient.ResolveStoreName(storeName)
-		if err != nil {
-			return nil, output, fmt.Errorf("store '%s' not found: %w", storeName, err)
-		}
-		storeNames = []string{remoteStore.Name}
+		storeNames = append(storeNames, remoteStore.Name)
 	}
 
-	// Perform query
 	resp, err := s.geminiClient.Query(model, input.Question, storeNames, input.MetadataFilter)
 	if err != nil {
 		return nil, output, fmt.Errorf("query failed: %w", err)
@@ -176,7 +262,6 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest, inpu
 		}, output, nil
 	}
 
-	// Extract answer
 	candidate := resp.Candidates[0]
 	var answerBuilder strings.Builder
 	for _, part := range candidate.Content.Parts {
@@ -186,7 +271,6 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest, inpu
 	}
 	output.Answer = answerBuilder.String()
 
-	// Extract citations if requested
 	if input.ShowCitations && candidate.GroundingMetadata != nil {
 		for _, chunk := range candidate.GroundingMetadata.GroundingChunks {
 			if chunk.RetrievedContext != nil {
@@ -211,7 +295,50 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest, inpu
 	}, output, nil
 }
 
-// handleList handles the list tool
+// handleQueryEmbed handles query for embedding stores
+func (s *Server) handleQueryEmbed(ctx context.Context, storeName string, input QueryInput) (*mcp.CallToolResult, QueryOutput, error) {
+	output := QueryOutput{}
+
+	config := rag.DefaultConfig()
+	if input.TopK > 0 {
+		config.TopK = input.TopK
+	}
+	if input.MinScore > 0 {
+		config.MinScore = input.MinScore
+	}
+
+	results, err := s.ragEngine.Query(input.Question, storeName, config)
+	if err != nil {
+		return nil, output, fmt.Errorf("query failed: %w", err)
+	}
+
+	if len(results) == 0 {
+		output.Answer = "No results found."
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: output.Answer},
+			},
+		}, output, nil
+	}
+
+	var textBuilder strings.Builder
+	for _, r := range results {
+		text := r.Text
+		if len(text) > 300 {
+			text = text[:300] + "..."
+		}
+		textBuilder.WriteString(fmt.Sprintf("[%.4f] %s: %s\n\n", r.Score, r.FilePath, text))
+	}
+	output.Answer = textBuilder.String()
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: output.Answer},
+		},
+	}, output, nil
+}
+
+// handleList handles the list tool (auto-detects Embedding or FileSearch store)
 func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest, input ListInput) (*mcp.CallToolResult, ListOutput, error) {
 	output := ListOutput{Items: []ListItem{}}
 
@@ -220,10 +347,16 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest, input
 		return nil, output, err
 	}
 
-	// Resolve store and list from remote
+	// Embedding store first
+	index, _, loadErr := rag.LoadIndex(storeName)
+	if loadErr == nil && index != nil {
+		return s.handleListEmbed(storeName, index, input.Pattern)
+	}
+
+	// FileSearch store
 	resolvedName, st, err := s.geminiClient.ResolveStoreName(storeName)
 	if err != nil {
-		return nil, output, fmt.Errorf("store '%s' not found: %w", storeName, err)
+		return nil, output, fmt.Errorf("store '%s' not found (checked both embedding and FileSearch)", storeName)
 	}
 
 	docs, err := s.geminiClient.ListAllDocuments(resolvedName)
@@ -231,7 +364,6 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest, input
 		return nil, output, fmt.Errorf("failed to list documents: %w", err)
 	}
 
-	// Apply pattern filter if provided
 	var re *regexp.Regexp
 	if input.Pattern != "" {
 		re, err = regexp.Compile(input.Pattern)
@@ -255,14 +387,63 @@ func (s *Server) handleList(ctx context.Context, req *mcp.CallToolRequest, input
 	}
 	output.Total = len(output.Items)
 
+	var textBuilder strings.Builder
+	textBuilder.WriteString(fmt.Sprintf("[FileSearch] Found %d documents in store '%s':\n\n", output.Total, st.DisplayName))
+	for _, item := range output.Items {
+		textBuilder.WriteString(fmt.Sprintf("- %s (state: %s)\n", item.DisplayName, item.State))
+	}
+
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("Found %d documents in store '%s'", output.Total, st.DisplayName)},
+			&mcp.TextContent{Text: textBuilder.String()},
 		},
 	}, output, nil
 }
 
-// handleDelete handles the delete tool
+// handleListEmbed lists files in an embedding store
+func (s *Server) handleListEmbed(storeName string, index *rag.RagIndex, pattern string) (*mcp.CallToolResult, ListOutput, error) {
+	output := ListOutput{Items: []ListItem{}}
+
+	files := make(map[string]int)
+	for _, m := range index.Meta {
+		files[m.FilePath]++
+	}
+
+	var re *regexp.Regexp
+	if pattern != "" {
+		var err error
+		re, err = regexp.Compile(pattern)
+		if err != nil {
+			return nil, output, fmt.Errorf("invalid pattern: %w", err)
+		}
+	}
+
+	for path, chunks := range files {
+		if re != nil && !re.MatchString(path) {
+			continue
+		}
+		output.Items = append(output.Items, ListItem{
+			DisplayName: path,
+			State:       fmt.Sprintf("%d chunks", chunks),
+		})
+	}
+	output.Total = len(output.Items)
+
+	var textBuilder strings.Builder
+	textBuilder.WriteString(fmt.Sprintf("[Embedding] Found %d files in store '%s' (model: %s, dimension: %d):\n\n",
+		output.Total, storeName, index.EmbeddingModel, index.Dimension))
+	for _, item := range output.Items {
+		textBuilder.WriteString(fmt.Sprintf("- %s (%s)\n", item.DisplayName, item.State))
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: textBuilder.String()},
+		},
+	}, output, nil
+}
+
+// handleDelete handles the delete tool (auto-detects Embedding or FileSearch store)
 func (s *Server) handleDelete(ctx context.Context, req *mcp.CallToolRequest, input DeleteInput) (*mcp.CallToolResult, DeleteOutput, error) {
 	output := DeleteOutput{FileName: input.FileName}
 
@@ -275,19 +456,39 @@ func (s *Server) handleDelete(ctx context.Context, req *mcp.CallToolRequest, inp
 		return nil, output, err
 	}
 
-	// Resolve store
-	resolvedName, _, err := s.geminiClient.ResolveStoreName(storeName)
-	if err != nil {
-		return nil, output, fmt.Errorf("store '%s' not found: %w", storeName, err)
+	// Embedding store
+	if isEmbedStore(storeName) {
+		deleted, err := s.ragEngine.DeleteFiles(storeName, regexp.QuoteMeta(input.FileName))
+		if err != nil {
+			return nil, output, fmt.Errorf("delete failed: %w", err)
+		}
+		if deleted == 0 {
+			output.Error = fmt.Sprintf("file '%s' not found in store", input.FileName)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: output.Error},
+				},
+			}, output, nil
+		}
+		output.Success = true
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Successfully deleted '%s' from embedding store", input.FileName)},
+			},
+		}, output, nil
 	}
 
-	// List documents to find the one matching file_name
+	// FileSearch store
+	resolvedName, _, err := s.geminiClient.ResolveStoreName(storeName)
+	if err != nil {
+		return nil, output, fmt.Errorf("store '%s' not found (checked both embedding and FileSearch)", storeName)
+	}
+
 	docs, err := s.geminiClient.ListAllDocuments(resolvedName)
 	if err != nil {
 		return nil, output, fmt.Errorf("failed to list documents: %w", err)
 	}
 
-	// Find document by display name
 	var targetDoc *struct {
 		Name        string
 		DisplayName string
@@ -335,8 +536,31 @@ func (s *Server) handleCreateStore(ctx context.Context, req *mcp.CallToolRequest
 	if input.StoreName == "" {
 		return nil, output, fmt.Errorf("store_name is required")
 	}
+	if !s.isStoreAllowed(input.StoreName) {
+		return nil, output, fmt.Errorf("store '%s' is not in the allowed stores list", input.StoreName)
+	}
 
-	store, err := s.geminiClient.CreateFileSearchStore(input.StoreName)
+	if input.Type == "embed" || input.Type == "embedding" {
+		// Create embedding store by initializing an empty index
+		if err := rag.CreateEmptyIndex(input.StoreName); err != nil {
+			output.Error = err.Error()
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Failed to create embedding store: %v", err)},
+				},
+			}, output, nil
+		}
+		output.Success = true
+		output.StoreID = input.StoreName
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Successfully created embedding store '%s'", input.StoreName)},
+			},
+		}, output, nil
+	}
+
+	// Default: FileSearch store
+	st, err := s.geminiClient.CreateFileSearchStore(input.StoreName)
 	if err != nil {
 		output.Error = err.Error()
 		return &mcp.CallToolResult{
@@ -347,26 +571,47 @@ func (s *Server) handleCreateStore(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	output.Success = true
-	output.StoreID = store.Name
+	output.StoreID = st.Name
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("Successfully created store '%s' (ID: %s)", input.StoreName, store.Name)},
+			&mcp.TextContent{Text: fmt.Sprintf("Successfully created FileSearch store '%s' (ID: %s)", input.StoreName, st.Name)},
 		},
 	}, output, nil
 }
 
-// handleDeleteStore handles the delete_store tool
+// handleDeleteStore handles the delete_store tool (auto-detects Embedding or FileSearch store)
 func (s *Server) handleDeleteStore(ctx context.Context, req *mcp.CallToolRequest, input DeleteStoreInput) (*mcp.CallToolResult, DeleteStoreOutput, error) {
 	output := DeleteStoreOutput{StoreName: input.StoreName}
 
 	if input.StoreName == "" {
 		return nil, output, fmt.Errorf("store_name is required")
 	}
+	if !s.isStoreAllowed(input.StoreName) {
+		return nil, output, fmt.Errorf("store '%s' is not in the allowed stores list", input.StoreName)
+	}
 
-	// Resolve store
+	// Embedding store
+	if isEmbedStore(input.StoreName) {
+		if err := rag.DeleteIndex(input.StoreName); err != nil {
+			output.Error = err.Error()
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Failed to delete embedding store: %v", err)},
+				},
+			}, output, nil
+		}
+		output.Success = true
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Successfully deleted embedding store '%s'", input.StoreName)},
+			},
+		}, output, nil
+	}
+
+	// FileSearch store
 	resolvedName, remoteStore, err := s.geminiClient.ResolveStoreName(input.StoreName)
 	if err != nil {
-		return nil, output, fmt.Errorf("store '%s' not found: %w", input.StoreName, err)
+		return nil, output, fmt.Errorf("store '%s' not found (checked both embedding and FileSearch)", input.StoreName)
 	}
 
 	if err := s.geminiClient.DeleteFileSearchStore(resolvedName, true); err != nil {
@@ -381,30 +626,60 @@ func (s *Server) handleDeleteStore(ctx context.Context, req *mcp.CallToolRequest
 	output.Success = true
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("Successfully deleted store '%s'", remoteStore.DisplayName)},
+			&mcp.TextContent{Text: fmt.Sprintf("Successfully deleted FileSearch store '%s'", remoteStore.DisplayName)},
 		},
 	}, output, nil
 }
 
-// handleListStores handles the list_stores tool
+// handleListStores handles the list_stores tool (lists both FileSearch and Embedding stores)
 func (s *Server) handleListStores(ctx context.Context, req *mcp.CallToolRequest, input ListStoresInput) (*mcp.CallToolResult, ListStoresOutput, error) {
 	output := ListStoresOutput{Stores: []StoreInfo{}}
 
-	// Get all stores with pagination
+	var textBuilder strings.Builder
+
+	// Embedding stores (local)
+	embedStores, _ := rag.ListStores()
+	var filteredEmbedStores []string
+	for _, name := range embedStores {
+		if s.isStoreAllowed(name) {
+			filteredEmbedStores = append(filteredEmbedStores, name)
+		}
+	}
+	if len(filteredEmbedStores) > 0 {
+		textBuilder.WriteString(fmt.Sprintf("[Embedding] %d stores:\n", len(filteredEmbedStores)))
+		for _, name := range filteredEmbedStores {
+			info := StoreInfo{
+				Name:        name,
+				DisplayName: name,
+			}
+			if index, _, err := rag.LoadIndex(name); err == nil && index != nil {
+				textBuilder.WriteString(fmt.Sprintf("- %s (model: %s, dimension: %d, chunks: %d)\n", name, index.EmbeddingModel, index.Dimension, len(index.Meta)))
+			} else {
+				textBuilder.WriteString(fmt.Sprintf("- %s\n", name))
+			}
+			output.Stores = append(output.Stores, info)
+		}
+		textBuilder.WriteString("\n")
+	}
+
+	// FileSearch stores (remote)
 	pageToken := ""
+	var fsStores []StoreInfo
 	for {
 		resp, err := s.geminiClient.ListFileSearchStores(pageToken)
 		if err != nil {
-			return nil, output, fmt.Errorf("failed to list stores: %w", err)
+			return nil, output, fmt.Errorf("failed to list FileSearch stores: %w", err)
 		}
 
 		for _, st := range resp.FileSearchStores {
-			output.Stores = append(output.Stores, StoreInfo{
-				Name:        st.Name,
-				DisplayName: st.DisplayName,
-				CreateTime:  st.CreateTime,
-				UpdateTime:  st.UpdateTime,
-			})
+			if s.isStoreAllowed(st.DisplayName) {
+				fsStores = append(fsStores, StoreInfo{
+					Name:        st.Name,
+					DisplayName: st.DisplayName,
+					CreateTime:  st.CreateTime,
+					UpdateTime:  st.UpdateTime,
+				})
+			}
 		}
 
 		if resp.NextPageToken == "" {
@@ -412,167 +687,16 @@ func (s *Server) handleListStores(ctx context.Context, req *mcp.CallToolRequest,
 		}
 		pageToken = resp.NextPageToken
 	}
+
+	if len(fsStores) > 0 {
+		textBuilder.WriteString(fmt.Sprintf("[FileSearch] %d stores:\n", len(fsStores)))
+		for _, st := range fsStores {
+			textBuilder.WriteString(fmt.Sprintf("- %s (ID: %s)\n", st.DisplayName, st.Name))
+		}
+		output.Stores = append(output.Stores, fsStores...)
+	}
+
 	output.Total = len(output.Stores)
-
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("Found %d stores", output.Total)},
-		},
-	}, output, nil
-}
-
-// handleEmbedIndex handles the embed_index tool
-func (s *Server) handleEmbedIndex(ctx context.Context, req *mcp.CallToolRequest, input EmbedIndexInput) (*mcp.CallToolResult, EmbedIndexOutput, error) {
-	output := EmbedIndexOutput{FileName: input.FileName}
-
-	if input.FileName == "" {
-		return nil, output, fmt.Errorf("file_name is required")
-	}
-	if input.FileContent == "" {
-		return nil, output, fmt.Errorf("file_content is required")
-	}
-
-	storeName, err := s.getStoreName(input.StoreName)
-	if err != nil {
-		return nil, output, err
-	}
-
-	config := rag.DefaultConfig()
-	if input.Model != "" {
-		config.Model = input.Model
-	}
-	if input.ChunkSize > 0 {
-		config.ChunkSize = input.ChunkSize
-	}
-	if input.ChunkOverlap > 0 {
-		config.ChunkOverlap = input.ChunkOverlap
-	}
-	if input.Dimension > 0 {
-		config.Dimension = input.Dimension
-	}
-
-	// Multimodal path: binary content with MIME type
-	if input.MIMEType != "" && input.IsBase64 {
-		ct := fileutil.ClassifyContent(input.MIMEType)
-		if !fileutil.IsMultimodal(ct) {
-			return nil, output, fmt.Errorf("mime_type %s is not a multimodal type; use plain text indexing instead", input.MIMEType)
-		}
-
-		data, err := base64.StdEncoding.DecodeString(input.FileContent)
-		if err != nil {
-			return nil, output, fmt.Errorf("failed to decode base64 content: %w", err)
-		}
-
-		if err := s.ragEngine.IndexMultimodalContent(storeName, input.FileName, data, input.MIMEType, config); err != nil {
-			output.Error = err.Error()
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{
-					&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
-				},
-			}, output, nil
-		}
-
-		// Count chunks from the saved index
-		chunks := 1
-		if input.MIMEType == "application/pdf" {
-			if pageCount, err := pdfutil.PageCount(data); err == nil {
-				chunks = (pageCount + pdfutil.DefaultMaxPages - 1) / pdfutil.DefaultMaxPages
-			}
-		} else if idx, _, loadErr := rag.LoadIndex(storeName); loadErr == nil && idx != nil {
-			count := 0
-			for _, m := range idx.Meta {
-				if m.FilePath == input.FileName {
-					count++
-				}
-			}
-			if count > 0 {
-				chunks = count
-			}
-		}
-
-		output.Success = true
-		output.Chunks = chunks
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{Text: fmt.Sprintf("Successfully indexed multimodal '%s' (%s, %d embedding(s))", input.FileName, ct, chunks)},
-			},
-		}, output, nil
-	}
-
-	// Text path
-	if err := s.ragEngine.IndexContent(storeName, input.FileName, input.FileContent, config); err != nil {
-		output.Error = err.Error()
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
-			},
-		}, output, nil
-	}
-
-	chunks := rag.ChunkText(input.FileContent, config.ChunkSize, config.ChunkOverlap)
-	output.Success = true
-	output.Chunks = len(chunks)
-
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("Successfully indexed '%s' (%d chunks)", input.FileName, output.Chunks)},
-		},
-	}, output, nil
-}
-
-// handleEmbedQuery handles the embed_query tool
-func (s *Server) handleEmbedQuery(ctx context.Context, req *mcp.CallToolRequest, input EmbedQueryInput) (*mcp.CallToolResult, EmbedQueryOutput, error) {
-	output := EmbedQueryOutput{Results: []EmbedSearchResult{}}
-
-	if input.Question == "" {
-		return nil, output, fmt.Errorf("question is required")
-	}
-
-	storeName, err := s.getStoreName(input.StoreName)
-	if err != nil {
-		return nil, output, err
-	}
-
-	config := rag.DefaultConfig()
-	if input.Model != "" {
-		config.Model = input.Model
-	}
-	if input.TopK > 0 {
-		config.TopK = input.TopK
-	}
-	if input.MinScore > 0 {
-		config.MinScore = input.MinScore
-	}
-
-	results, err := s.ragEngine.Query(input.Question, storeName, config)
-	if err != nil {
-		return nil, output, fmt.Errorf("embed query failed: %w", err)
-	}
-
-	var textBuilder strings.Builder
-	for _, r := range results {
-		output.Results = append(output.Results, EmbedSearchResult{
-			Text:        r.Text,
-			FilePath:    r.FilePath,
-			Score:       r.Score,
-			ContentType: r.ContentType,
-			PageLabel:   r.PageLabel,
-		})
-		text := r.Text
-		if len(text) > 300 {
-			text = text[:300] + "..."
-		}
-		textBuilder.WriteString(fmt.Sprintf("[%.4f] %s: %s\n\n", r.Score, r.FilePath, text))
-	}
-	output.Total = len(output.Results)
-
-	if output.Total == 0 {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{Text: "No results found."},
-			},
-		}, output, nil
-	}
 
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
@@ -581,61 +705,7 @@ func (s *Server) handleEmbedQuery(ctx context.Context, req *mcp.CallToolRequest,
 	}, output, nil
 }
 
-// handleEmbedIndexDirectory handles the embed_index_directory tool
-func (s *Server) handleEmbedIndexDirectory(ctx context.Context, req *mcp.CallToolRequest, input EmbedIndexDirectoryInput) (*mcp.CallToolResult, EmbedIndexDirectoryOutput, error) {
-	output := EmbedIndexDirectoryOutput{}
-
-	if len(input.Directories) == 0 {
-		return nil, output, fmt.Errorf("directories is required and must not be empty")
-	}
-
-	storeName, err := s.getStoreName(input.StoreName)
-	if err != nil {
-		return nil, output, err
-	}
-
-	config := rag.DefaultConfig()
-	if input.Model != "" {
-		config.Model = input.Model
-	}
-	if input.ChunkSize > 0 {
-		config.ChunkSize = input.ChunkSize
-	}
-	if input.ChunkOverlap > 0 {
-		config.ChunkOverlap = input.ChunkOverlap
-	}
-	if input.Dimension > 0 {
-		config.Dimension = input.Dimension
-	}
-
-	result, err := s.ragEngine.Index(input.Directories, input.ExcludePatterns, storeName, config)
-	if err != nil {
-		output.Error = err.Error()
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
-			},
-		}, output, nil
-	}
-
-	output.Success = true
-	output.TotalChunks = result.TotalChunks
-	output.IndexedFiles = result.IndexedFiles
-	output.SkippedFiles = result.SkippedFiles
-	output.NewFiles = result.NewFiles
-	output.UpdatedFiles = result.UpdatedFiles
-	output.MultimodalFiles = result.MultimodalFiles
-	output.SkippedMultimodal = result.SkippedMultimodal
-
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			&mcp.TextContent{Text: fmt.Sprintf("Indexed %d files (%d chunks). New: %d, Updated: %d, Skipped: %d, Multimodal: %d",
-				output.IndexedFiles, output.TotalChunks, output.NewFiles, output.UpdatedFiles, output.SkippedFiles, output.MultimodalFiles)},
-		},
-	}, output, nil
-}
-
-// handleUploadDirectory handles the upload_directory tool
+// handleUploadDirectory handles the upload_directory tool (auto-detects Embedding or FileSearch store)
 func (s *Server) handleUploadDirectory(ctx context.Context, req *mcp.CallToolRequest, input UploadDirectoryInput) (*mcp.CallToolResult, UploadDirectoryOutput, error) {
 	output := UploadDirectoryOutput{}
 
@@ -648,22 +718,25 @@ func (s *Server) handleUploadDirectory(ctx context.Context, req *mcp.CallToolReq
 		return nil, output, err
 	}
 
+	// Embedding store — delegate to embed index directory
+	if isEmbedStore(storeName) {
+		return s.handleUploadDirectoryEmbed(ctx, storeName, input)
+	}
+
+	// FileSearch store
 	storeManager, err := s.getStoreManager()
 	if err != nil {
 		return nil, output, err
 	}
 
-	// Resolve store name (store must exist)
 	_, remoteStore, err := s.geminiClient.ResolveStoreName(storeName)
 	if err != nil {
-		return nil, output, fmt.Errorf("store '%s' not found: %w", storeName, err)
+		return nil, output, fmt.Errorf("store '%s' not found (checked both embedding and FileSearch)", storeName)
 	}
 	localStoreName := strings.TrimPrefix(remoteStore.Name, "fileSearchStores/")
 
-	// Ensure local store exists
 	storeManager.GetOrCreateStore(localStoreName)
 
-	// Discover files
 	files, err := fileutil.DiscoverFiles(input.Directories, input.ExcludePatterns)
 	if err != nil {
 		output.Error = err.Error()
@@ -694,7 +767,6 @@ func (s *Server) handleUploadDirectory(ctx context.Context, req *mcp.CallToolReq
 	}
 	s.syncRemoteDocumentsToLocalStore(storeManager, localStoreName, remoteDocs)
 
-	// Create uploader and upload files
 	parallelism := input.Parallelism
 	if parallelism <= 0 {
 		parallelism = 5
@@ -703,7 +775,6 @@ func (s *Server) handleUploadDirectory(ctx context.Context, req *mcp.CallToolReq
 
 	results := uploader.UploadFiles(files, nil)
 
-	// Tally results
 	for _, r := range results {
 		if r.Error != nil {
 			output.Failed++
@@ -714,7 +785,6 @@ func (s *Server) handleUploadDirectory(ctx context.Context, req *mcp.CallToolReq
 		}
 	}
 
-	// Save store data
 	if err := storeManager.Save(); err != nil {
 		output.Error = fmt.Sprintf("uploads completed but failed to save store data: %v", err)
 		return &mcp.CallToolResult{
@@ -734,6 +804,43 @@ func (s *Server) handleUploadDirectory(ctx context.Context, req *mcp.CallToolReq
 	}, output, nil
 }
 
+// handleUploadDirectoryEmbed handles directory indexing for embedding stores
+func (s *Server) handleUploadDirectoryEmbed(ctx context.Context, storeName string, input UploadDirectoryInput) (*mcp.CallToolResult, UploadDirectoryOutput, error) {
+	output := UploadDirectoryOutput{}
+
+	config := rag.DefaultConfig()
+	if input.ChunkSize > 0 {
+		config.ChunkSize = input.ChunkSize
+	}
+	if input.ChunkOverlap > 0 {
+		config.ChunkOverlap = input.ChunkOverlap
+	}
+	if input.Dimension > 0 {
+		config.Dimension = input.Dimension
+	}
+
+	result, err := s.ragEngine.Index(input.Directories, input.ExcludePatterns, storeName, config)
+	if err != nil {
+		output.Error = err.Error()
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: fmt.Sprintf("Indexing failed: %v", err)},
+			},
+		}, output, nil
+	}
+
+	output.Success = true
+	output.Uploaded = result.IndexedFiles
+	output.Skipped = result.SkippedFiles
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf("Indexed %d files (%d chunks). New: %d, Updated: %d, Skipped: %d, Multimodal: %d",
+				result.IndexedFiles, result.TotalChunks, result.NewFiles, result.UpdatedFiles, result.SkippedFiles, result.MultimodalFiles)},
+		},
+	}, output, nil
+}
+
 func (s *Server) syncRemoteDocumentsToLocalStore(storeManager *store.Manager, storeName string, docs []gemini.FileSearchDocument) {
 	remotePaths := make(map[string]struct{}, len(docs))
 
@@ -743,13 +850,9 @@ func (s *Server) syncRemoteDocumentsToLocalStore(storeManager *store.Manager, st
 		}
 		remotePaths[doc.DisplayName] = struct{}{}
 
-		// Normalize checksum: handleUpload stores "sha256:<hex>" but
-		// Uploader/CalculateChecksum uses raw hex. Strip the prefix so
-		// the local cache always matches the format Uploader expects.
 		checksum := gemini.GetDocumentChecksum(&doc)
 		checksum = strings.TrimPrefix(checksum, "sha256:")
 
-		// Merge with existing local metadata to preserve Size/UploadedAt
 		meta := store.FileMetadata{
 			LocalPath:  doc.DisplayName,
 			RemoteID:   doc.Name,

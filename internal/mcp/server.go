@@ -15,10 +15,11 @@ import (
 
 // ServerConfig holds configuration for the MCP server
 type ServerConfig struct {
-	APIKey      string
-	EmbedURL    string // Optional: OpenAI-compatible embedding URL (e.g. http://localhost:11434 for Ollama)
-	EmbedAPIKey string // Optional: API key for OpenAI-compatible embedding APIs
-	DataFile    string // Optional: path to store data file (default: ~/.ragujuary.json)
+	APIKey        string
+	EmbedURL      string   // Optional: OpenAI-compatible embedding URL (e.g. http://localhost:11434 for Ollama)
+	EmbedAPIKey   string   // Optional: API key for OpenAI-compatible embedding APIs
+	DataFile      string   // Optional: path to store data file (default: ~/.ragujuary.json)
+	AllowedStores []string // Optional: restrict to specific stores
 }
 
 // Server wraps the MCP server with ragujuary-specific functionality
@@ -66,68 +67,44 @@ func NewServer(config ServerConfig, version string) (*Server, error) {
 
 // registerTools registers all MCP tools
 func (s *Server) registerTools() {
-	// Upload tool
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "upload",
-		Description: "Upload a file to a Gemini File Search Store. Provide file content directly (base64 encoded for binary files).",
+		Description: "Upload/index a file to a store. Auto-detects store type: embedding stores index content locally, FileSearch stores upload to Gemini cloud. For multimodal content (image/PDF/video/audio), set mime_type and is_base64=true.",
 	}, s.handleUpload)
 
-	// Query tool
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "query",
-		Description: "Query documents in a File Search Store using natural language. Performs semantic search and generates an answer grounded in retrieved content.",
+		Description: "Query documents in a store using natural language. Auto-detects store type: embedding stores use cosine similarity search, FileSearch stores use Gemini's grounded generation with citations.",
 	}, s.handleQuery)
 
-	// List tool
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "list",
-		Description: "List files in a store or list all available File Search Stores.",
+		Description: "List files in a store. Auto-detects store type.",
 	}, s.handleList)
 
-	// Delete tool
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "delete",
-		Description: "Delete a file from a File Search Store by file name.",
+		Description: "Delete a file from a store by file name. Auto-detects store type.",
 	}, s.handleDelete)
 
-	// Create store tool
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "create_store",
-		Description: "Create a new File Search Store.",
+		Description: "Create a new store. Set type='embed' for embedding store or type='filesearch' (default) for Gemini FileSearch store.",
 	}, s.handleCreateStore)
 
-	// Delete store tool
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "delete_store",
-		Description: "Delete an entire File Search Store and all its documents.",
+		Description: "Delete an entire store and all its data. Auto-detects store type.",
 	}, s.handleDeleteStore)
 
-	// List stores tool
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "list_stores",
-		Description: "List all available File Search Stores.",
+		Description: "List all available stores (both embedding and FileSearch).",
 	}, s.handleListStores)
-
-	// Embedding-based RAG tools
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "embed_index",
-		Description: "Index content using embeddings for local semantic search. Text is chunked and batch-embedded. For multimodal (image/PDF/video/audio), set mime_type and is_base64=true to embed as a single vector.",
-	}, s.handleEmbedIndex)
-
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "embed_query",
-		Description: "Query the local embedding store using semantic search. Returns the most similar text chunks with relevance scores.",
-	}, s.handleEmbedQuery)
-
-	// Directory-based tools
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "embed_index_directory",
-		Description: "Index files from directories using embeddings for local semantic search. Recursively discovers files, computes checksums for incremental updates, and batch-embeds text/multimodal content. Supports exclude patterns for filtering.",
-	}, s.handleEmbedIndexDirectory)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "upload_directory",
-		Description: "Upload files from directories to a Gemini File Search Store. Recursively discovers files, skips unchanged files by checksum, and uploads in parallel.",
+		Description: "Upload/index files from directories to a store. Auto-detects store type: embedding stores index locally, FileSearch stores upload to Gemini cloud. Recursively discovers files and skips unchanged files.",
 	}, s.handleUploadDirectory)
 }
 
@@ -150,12 +127,63 @@ func (s *Server) NewStreamableHTTPHandler() http.Handler {
 	}, nil)
 }
 
-// getStoreName returns the store name from input, returns error if not specified
+// getStoreName returns the store name from input, returns error if not specified or not allowed
 func (s *Server) getStoreName(inputStoreName string) (string, error) {
-	if inputStoreName != "" {
-		return inputStoreName, nil
+	if inputStoreName == "" {
+		// If only one store is allowed, use it as default
+		if len(s.config.AllowedStores) == 1 {
+			return s.config.AllowedStores[0], nil
+		}
+		return "", fmt.Errorf("store_name is required")
 	}
-	return "", fmt.Errorf("store_name is required")
+	if !s.isStoreAllowed(inputStoreName) {
+		return "", fmt.Errorf("store '%s' is not in the allowed stores list", inputStoreName)
+	}
+	return inputStoreName, nil
+}
+
+// getAllowedStoreNames validates and resolves one or more store names.
+func (s *Server) getAllowedStoreNames(inputStoreName string, inputStoreNames []string) ([]string, error) {
+	if len(inputStoreNames) == 0 {
+		storeName, err := s.getStoreName(inputStoreName)
+		if err != nil {
+			return nil, err
+		}
+		return []string{storeName}, nil
+	}
+
+	names := make([]string, 0, len(inputStoreNames))
+	seen := make(map[string]struct{}, len(inputStoreNames))
+	for _, name := range inputStoreNames {
+		if name == "" {
+			return nil, fmt.Errorf("store_names must not contain empty values")
+		}
+		if !s.isStoreAllowed(name) {
+			return nil, fmt.Errorf("store '%s' is not in the allowed stores list", name)
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("store_names must not be empty")
+	}
+	return names, nil
+}
+
+// isStoreAllowed checks if a store name is in the allowed list (empty list means all allowed)
+func (s *Server) isStoreAllowed(name string) bool {
+	if len(s.config.AllowedStores) == 0 {
+		return true
+	}
+	for _, allowed := range s.config.AllowedStores {
+		if allowed == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) getStoreManager() (*store.Manager, error) {

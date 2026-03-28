@@ -283,6 +283,12 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 				continue
 			}
 
+			// Extract text per page for fallback context
+			pageTexts, textErr := pdfutil.ExtractText(data)
+			if textErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to extract text from %s: %v\n", fi.Path, textErr)
+			}
+
 			embedded := 0
 			for _, chunk := range chunks {
 				vec, err := mmClient.EmbedMultimodalContent(config.Model, embedding.MultimodalContent{
@@ -295,10 +301,25 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 				}
 
 				pageLabel := fmt.Sprintf("pages %d-%d of %d", chunk.StartPage, chunk.EndPage, chunk.TotalPages)
+
+				// Build text from extracted pages for this chunk range
+				chunkText := fmt.Sprintf("[%s: %s (%s)]", ct, filepath.Base(fi.Path), pageLabel)
+				if pageTexts != nil {
+					var parts []string
+					for p := chunk.StartPage; p <= chunk.EndPage && p <= len(pageTexts); p++ {
+						if t := pageTexts[p-1]; t != "" {
+							parts = append(parts, t)
+						}
+					}
+					if len(parts) > 0 {
+						chunkText = strings.Join(parts, "\n\n")
+					}
+				}
+
 				newMeta = append(newMeta, ChunkMeta{
 					FilePath:    fi.Path,
 					StartOffset: 0,
-					Text:        fmt.Sprintf("[%s: %s (%s)]", ct, filepath.Base(fi.Path), pageLabel),
+					Text:        chunkText,
 					ContentType: ct,
 					MIMEType:    fi.MimeType,
 					PageLabel:   pageLabel,

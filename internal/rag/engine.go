@@ -312,7 +312,7 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 						}
 					}
 					if len(parts) > 0 {
-						chunkText = strings.Join(parts, "\n\n")
+						chunkText = chunkText + "\n\n" + strings.Join(parts, "\n\n")
 					}
 				}
 

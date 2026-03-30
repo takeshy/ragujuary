@@ -269,7 +269,12 @@ ragujuary embed query -s mystore "猫の写真"
 
 # 結果をカスタマイズ
 ragujuary embed query -s mystore --top-k 10 --min-score 0.5 "エラーハンドリングパターン"
+
+# 外部ツールで作成された RAG インデックスを検索
+ragujuary embed query --dir /path/to/external/rag/store "検索クエリ"
 ```
+
+`--dir` フラグを使うと、他のツールで作成された RAG インデックスを検索できます。snake_case（ragujuary形式）と camelCase の両方の JSON フィールド名を自動検出します。`--dir` 指定時は `--store` は不要です。
 
 #### インデックス済みファイルを一覧表示
 

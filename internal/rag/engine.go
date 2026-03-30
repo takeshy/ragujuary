@@ -814,10 +814,27 @@ func (e *Engine) Query(question, storeName string, config Config) ([]SearchResul
 		return nil, fmt.Errorf("store '%s' not found or empty", storeName)
 	}
 
+	return e.queryIndex(question, index, vectors, config)
+}
+
+// QueryDir performs a semantic search against a RAG index in an arbitrary directory
+func (e *Engine) QueryDir(question, dir string, config Config) ([]SearchResult, error) {
+	index, vectors, err := LoadIndexFromDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load index from %s: %w", dir, err)
+	}
+	if index == nil {
+		return nil, fmt.Errorf("no index found in '%s'", dir)
+	}
+
+	return e.queryIndex(question, index, vectors, config)
+}
+
+func (e *Engine) queryIndex(question string, index *RagIndex, vectors []float32, config Config) ([]SearchResult, error) {
 	// Use the model from the index if available
 	model := config.Model
 	if index.EmbeddingModel != "" {
-		model = index.EmbeddingModel
+		model = strings.TrimPrefix(index.EmbeddingModel, "models/")
 	}
 
 	// Embed query

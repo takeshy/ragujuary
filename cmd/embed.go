@@ -21,6 +21,7 @@ var (
 	embedExclude      []string
 	embedURL          string
 	embedAPIKey       string
+	embedDir          string
 )
 
 var embedCmd = &cobra.Command{
@@ -97,6 +98,7 @@ func init() {
 	// query flags
 	embedQueryCmd.Flags().IntVar(&embedTopK, "top-k", 5, "Number of top results to return")
 	embedQueryCmd.Flags().Float64Var(&embedMinScore, "min-score", 0.3, "Minimum similarity score threshold")
+	embedQueryCmd.Flags().StringVar(&embedDir, "dir", "", "Path to external RAG index directory (overrides --store)")
 
 	// list flags
 	embedListCmd.Flags().BoolVar(&embedListStores, "stores", false, "List all embedding stores instead of files")
@@ -188,7 +190,12 @@ func runEmbedQuery(cmd *cobra.Command, args []string) error {
 	engine := rag.NewEngine(client)
 	config := newEmbedConfig()
 
-	results, err := engine.Query(question, storeName, config)
+	var results []rag.SearchResult
+	if embedDir != "" {
+		results, err = engine.QueryDir(question, embedDir, config)
+	} else {
+		results, err = engine.Query(question, storeName, config)
+	}
 	if err != nil {
 		return err
 	}

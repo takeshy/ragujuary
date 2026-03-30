@@ -284,7 +284,12 @@ ragujuary embed query -s mystore "photo of a cat"
 
 # Customize results
 ragujuary embed query -s mystore --top-k 10 --min-score 0.5 "error handling patterns"
+
+# Query an external RAG index (created by other tools)
+ragujuary embed query --dir /path/to/external/rag/store "search query"
 ```
+
+The `--dir` flag allows querying RAG indexes created by external tools. It auto-detects both snake_case (ragujuary) and camelCase JSON field naming conventions. When `--dir` is specified, `--store` is not required.
 
 #### List indexed files
 

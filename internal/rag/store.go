@@ -89,13 +89,77 @@ func SaveIndex(storeName string, index *RagIndex, vectors []float32) error {
 	return nil
 }
 
+// externalChunkMeta handles camelCase JSON field names from external RAG tools
+type externalChunkMeta struct {
+	FilePath    string `json:"filePath"`
+	ChunkIndex  int    `json:"chunkIndex"`
+	Text        string `json:"text"`
+	ContentType string `json:"contentType,omitempty"`
+	PageLabel   string `json:"pageLabel,omitempty"`
+}
+
+// externalRagIndex handles camelCase JSON field names from external RAG tools
+type externalRagIndex struct {
+	Meta           []externalChunkMeta `json:"meta"`
+	Dimension      int                 `json:"dimension"`
+	FileChecksums  map[string]string   `json:"fileChecksums"`
+	EmbeddingModel string              `json:"embeddingModel"`
+}
+
+// convertExternalIndex converts an external format index to ragujuary format
+func convertExternalIndex(ext *externalRagIndex) *RagIndex {
+	meta := make([]ChunkMeta, len(ext.Meta))
+	for i, m := range ext.Meta {
+		meta[i] = ChunkMeta{
+			FilePath:    m.FilePath,
+			StartOffset: m.ChunkIndex,
+			Text:        m.Text,
+			ContentType: m.ContentType,
+			PageLabel:   m.PageLabel,
+		}
+	}
+	return &RagIndex{
+		Meta:           meta,
+		Dimension:      ext.Dimension,
+		FileChecksums:  ext.FileChecksums,
+		EmbeddingModel: ext.EmbeddingModel,
+	}
+}
+
+// unmarshalIndex parses index JSON, auto-detecting ragujuary (snake_case) or external (camelCase) format
+func unmarshalIndex(data []byte) (*RagIndex, error) {
+	var index RagIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, fmt.Errorf("failed to parse index: %w", err)
+	}
+
+	// Detect external (camelCase) format:
+	// - meta has items but FilePath is empty (camelCase "filePath" didn't match snake_case "file_path" tag)
+	// - or embedding_model is empty while dimension is set
+	needsExternal := (len(index.Meta) > 0 && index.Meta[0].FilePath == "") ||
+		(index.EmbeddingModel == "" && index.Dimension > 0)
+
+	if needsExternal {
+		var ext externalRagIndex
+		if err := json.Unmarshal(data, &ext); err == nil && len(ext.Meta) > 0 && ext.Meta[0].FilePath != "" {
+			return convertExternalIndex(&ext), nil
+		}
+	}
+
+	return &index, nil
+}
+
 // LoadIndex loads the RAG index and vectors from disk
 func LoadIndex(storeName string) (*RagIndex, []float32, error) {
 	dir, err := storeDir(storeName)
 	if err != nil {
 		return nil, nil, err
 	}
+	return LoadIndexFromDir(dir)
+}
 
+// LoadIndexFromDir loads the RAG index and vectors from an arbitrary directory
+func LoadIndexFromDir(dir string) (*RagIndex, []float32, error) {
 	// Load metadata
 	indexPath := filepath.Join(dir, indexFileName)
 	data, err := os.ReadFile(indexPath)
@@ -106,9 +170,9 @@ func LoadIndex(storeName string) (*RagIndex, []float32, error) {
 		return nil, nil, fmt.Errorf("failed to read index: %w", err)
 	}
 
-	var index RagIndex
-	if err := json.Unmarshal(data, &index); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse index: %w", err)
+	index, err := unmarshalIndex(data)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	if index.FormatVersion > formatVersion {
@@ -122,12 +186,22 @@ func LoadIndex(storeName string) (*RagIndex, []float32, error) {
 		return nil, nil, fmt.Errorf("failed to read vectors: %w", err)
 	}
 
+	if len(buf)%4 != 0 {
+		return nil, nil, fmt.Errorf("vectors file is corrupted: size %d is not a multiple of 4", len(buf))
+	}
+
 	vectors := make([]float32, len(buf)/4)
 	for i := range vectors {
 		vectors[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
 	}
 
-	return &index, vectors, nil
+	expected := len(index.Meta) * index.Dimension
+	if len(vectors) != expected {
+		return nil, nil, fmt.Errorf("vectors/index mismatch: got %d floats, expected %d (%d chunks × %d dimensions)",
+			len(vectors), expected, len(index.Meta), index.Dimension)
+	}
+
+	return index, vectors, nil
 }
 
 // CreateEmptyIndex creates a new empty embedding store

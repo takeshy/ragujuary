@@ -126,26 +126,60 @@ func convertExternalIndex(ext *externalRagIndex) *RagIndex {
 	}
 }
 
-// unmarshalIndex parses index JSON, auto-detecting ragujuary (snake_case) or external (camelCase) format
+// isCamelCaseFormat detects whether the index JSON uses camelCase field names
+// by checking multiple key pairs at both meta-item and top-level.
+func isCamelCaseFormat(data []byte) bool {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil {
+		return false
+	}
+
+	// Check top-level keys
+	if _, ok := raw["embeddingModel"]; ok {
+		if _, snake := raw["embedding_model"]; !snake {
+			return true
+		}
+	}
+	if _, ok := raw["fileChecksums"]; ok {
+		if _, snake := raw["file_checksums"]; !snake {
+			return true
+		}
+	}
+
+	// Check meta-item keys
+	metaRaw, ok := raw["meta"]
+	if !ok {
+		return false
+	}
+	var meta []map[string]json.RawMessage
+	if json.Unmarshal(metaRaw, &meta) != nil || len(meta) == 0 {
+		return false
+	}
+	camelKeys := []string{"filePath", "contentType", "pageLabel", "chunkIndex"}
+	for _, k := range camelKeys {
+		if _, ok := meta[0][k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// unmarshalIndex parses index JSON, auto-detecting ragujuary (snake_case) or external (camelCase) format.
+// Format detection is based on JSON key names at both meta and top level.
+// Falls back to snake_case (ragujuary native) when format cannot be determined.
 func unmarshalIndex(data []byte) (*RagIndex, error) {
+	if isCamelCaseFormat(data) {
+		var ext externalRagIndex
+		if err := json.Unmarshal(data, &ext); err != nil {
+			return nil, fmt.Errorf("failed to parse index: %w", err)
+		}
+		return convertExternalIndex(&ext), nil
+	}
+
 	var index RagIndex
 	if err := json.Unmarshal(data, &index); err != nil {
 		return nil, fmt.Errorf("failed to parse index: %w", err)
 	}
-
-	// Detect external (camelCase) format:
-	// - meta has items but FilePath is empty (camelCase "filePath" didn't match snake_case "file_path" tag)
-	// - or embedding_model is empty while dimension is set
-	needsExternal := (len(index.Meta) > 0 && index.Meta[0].FilePath == "") ||
-		(index.EmbeddingModel == "" && index.Dimension > 0)
-
-	if needsExternal {
-		var ext externalRagIndex
-		if err := json.Unmarshal(data, &ext); err == nil && len(ext.Meta) > 0 && ext.Meta[0].FilePath != "" {
-			return convertExternalIndex(&ext), nil
-		}
-	}
-
 	return &index, nil
 }
 

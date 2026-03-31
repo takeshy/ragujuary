@@ -1,10 +1,16 @@
 package rag
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/takeshy/ragujuary/internal/embedding"
 )
 
@@ -39,6 +45,33 @@ func fakeVector(text string, dimension int) []float32 {
 		vec[i] = float32(len(text) + i + 1)
 	}
 	return vec
+}
+
+func makeTestPDF(t *testing.T, pages int) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	img.Set(1, 0, color.RGBA{G: 255, A: 255})
+	img.Set(0, 1, color.RGBA{B: 255, A: 255})
+	img.Set(1, 1, color.RGBA{R: 255, G: 255, A: 255})
+
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatalf("png.Encode() error = %v", err)
+	}
+
+	readers := make([]io.Reader, pages)
+	for i := range readers {
+		readers[i] = bytes.NewReader(pngBuf.Bytes())
+	}
+
+	var pdfBuf bytes.Buffer
+	if err := api.ImportImages(nil, &pdfBuf, readers, nil, nil); err != nil {
+		t.Fatalf("ImportImages() error = %v", err)
+	}
+
+	return pdfBuf.Bytes()
 }
 
 func TestIndexPreservesFilesOutsideCurrentScan(t *testing.T) {
@@ -167,5 +200,163 @@ func TestIndexRetriesSkippedMultimodalWhenBackendChanges(t *testing.T) {
 	}
 	if len(index.Meta) != 2 {
 		t.Fatalf("meta count = %d, want 2", len(index.Meta))
+	}
+}
+
+func TestIndexReindexesOnlyPDFsWhenPDFMaxPagesChanges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	docsDir := filepath.Join(home, "docs")
+	if err := os.MkdirAll(docsDir, 0755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+
+	textPath := filepath.Join(docsDir, "doc.txt")
+	pdfPath := filepath.Join(docsDir, "paper.pdf")
+	if err := os.WriteFile(textPath, []byte("alpha document"), 0644); err != nil {
+		t.Fatalf("write text: %v", err)
+	}
+	if err := os.WriteFile(pdfPath, makeTestPDF(t, 7), 0644); err != nil {
+		t.Fatalf("write pdf: %v", err)
+	}
+
+	engine := NewEngine(fakeMultimodalClient{})
+	config := DefaultConfig()
+	config.Dimension = 4
+	config.ChunkSize = 32
+	config.ChunkOverlap = 0
+	config.PDFMaxPages = 6
+
+	first, err := engine.Index([]string{docsDir}, nil, "pdf-pages-store", config)
+	if err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if first.NewFiles != 2 {
+		t.Fatalf("first new files = %d, want 2", first.NewFiles)
+	}
+
+	index, _, err := LoadIndex("pdf-pages-store")
+	if err != nil {
+		t.Fatalf("load first index: %v", err)
+	}
+	if index.EffectivePDFMaxPages() != 6 {
+		t.Fatalf("stored pdf_max_pages = %d, want 6", index.EffectivePDFMaxPages())
+	}
+
+	config.PDFMaxPages = 3
+	second, err := engine.Index([]string{docsDir}, nil, "pdf-pages-store", config)
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if second.UpdatedFiles != 1 {
+		t.Fatalf("second updated files = %d, want 1", second.UpdatedFiles)
+	}
+	if second.SkippedFiles != 1 {
+		t.Fatalf("second skipped files = %d, want 1", second.SkippedFiles)
+	}
+
+	index, _, err = LoadIndex("pdf-pages-store")
+	if err != nil {
+		t.Fatalf("load second index: %v", err)
+	}
+	if index.EffectivePDFMaxPages() != 3 {
+		t.Fatalf("stored pdf_max_pages = %d, want 3", index.EffectivePDFMaxPages())
+	}
+
+	pdfChunks := 0
+	textChunks := 0
+	for _, meta := range index.Meta {
+		switch meta.FilePath {
+		case pdfPath:
+			pdfChunks++
+		case textPath:
+			textChunks++
+		}
+	}
+	if pdfChunks != 3 {
+		t.Fatalf("pdf chunk count = %d, want 3", pdfChunks)
+	}
+	if textChunks != 1 {
+		t.Fatalf("text chunk count = %d, want 1", textChunks)
+	}
+}
+
+func TestIndexReindexesOnlyTextWhenChunkConfigChanges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	docsDir := filepath.Join(home, "docs")
+	if err := os.MkdirAll(docsDir, 0755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+
+	textPath := filepath.Join(docsDir, "doc.txt")
+	imagePath := filepath.Join(docsDir, "photo.png")
+	content := "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj"
+	if err := os.WriteFile(textPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write text: %v", err)
+	}
+	if err := os.WriteFile(imagePath, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+
+	engine := NewEngine(fakeMultimodalClient{})
+	config := DefaultConfig()
+	config.Dimension = 4
+	config.ChunkSize = 32
+	config.ChunkOverlap = 0
+
+	first, err := engine.Index([]string{docsDir}, nil, "chunk-size-store", config)
+	if err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+	if first.NewFiles != 2 {
+		t.Fatalf("first new files = %d, want 2", first.NewFiles)
+	}
+
+	index, _, err := LoadIndex("chunk-size-store")
+	if err != nil {
+		t.Fatalf("load first index: %v", err)
+	}
+	if index.EffectiveChunkSize() != 32 || index.EffectiveChunkOverlap() != 0 {
+		t.Fatalf("stored chunk config = %d/%d, want 32/0", index.EffectiveChunkSize(), index.EffectiveChunkOverlap())
+	}
+
+	config.ChunkSize = 16
+	second, err := engine.Index([]string{docsDir}, nil, "chunk-size-store", config)
+	if err != nil {
+		t.Fatalf("second index: %v", err)
+	}
+	if second.UpdatedFiles != 1 {
+		t.Fatalf("second updated files = %d, want 1", second.UpdatedFiles)
+	}
+	if second.SkippedFiles != 1 {
+		t.Fatalf("second skipped files = %d, want 1", second.SkippedFiles)
+	}
+
+	index, _, err = LoadIndex("chunk-size-store")
+	if err != nil {
+		t.Fatalf("load second index: %v", err)
+	}
+	if index.EffectiveChunkSize() != 16 || index.EffectiveChunkOverlap() != 0 {
+		t.Fatalf("stored chunk config = %d/%d, want 16/0", index.EffectiveChunkSize(), index.EffectiveChunkOverlap())
+	}
+
+	textChunks := 0
+	imageChunks := 0
+	for _, meta := range index.Meta {
+		switch meta.FilePath {
+		case textPath:
+			textChunks++
+		case imagePath:
+			imageChunks++
+		}
+	}
+	if textChunks <= 1 {
+		t.Fatalf("text chunk count = %d, want more than 1 after smaller chunk_size", textChunks)
+	}
+	if imageChunks != 1 {
+		t.Fatalf("image chunk count = %d, want 1", imageChunks)
 	}
 }

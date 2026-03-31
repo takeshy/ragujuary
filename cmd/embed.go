@@ -16,6 +16,7 @@ var (
 	embedDimension    int
 	embedChunkSize    int
 	embedChunkOverlap int
+	embedPDFMaxPages  int
 	embedTopK         int
 	embedMinScore     float64
 	embedExclude      []string
@@ -94,6 +95,7 @@ func init() {
 	embedIndexCmd.Flags().StringSliceVarP(&embedExclude, "exclude", "e", nil, "Regex patterns to exclude files")
 	embedIndexCmd.Flags().IntVar(&embedChunkSize, "chunk-size", 1000, "Chunk size in characters")
 	embedIndexCmd.Flags().IntVar(&embedChunkOverlap, "chunk-overlap", 200, "Chunk overlap in characters")
+	embedIndexCmd.Flags().IntVar(&embedPDFMaxPages, "pdf-pages", 6, "Max pages per PDF chunk (1-6)")
 
 	// query flags
 	embedQueryCmd.Flags().IntVar(&embedTopK, "top-k", 5, "Number of top results to return")
@@ -141,12 +143,17 @@ func newEmbedConfig() rag.Config {
 	config.Dimension = embedDimension
 	config.ChunkSize = embedChunkSize
 	config.ChunkOverlap = embedChunkOverlap
+	config.PDFMaxPages = embedPDFMaxPages
 	config.TopK = embedTopK
 	config.MinScore = embedMinScore
 	return config
 }
 
 func runEmbedIndex(cmd *cobra.Command, args []string) error {
+	if embedPDFMaxPages < 1 || embedPDFMaxPages > 6 {
+		return fmt.Errorf("--pdf-pages must be between 1 and 6, got %d", embedPDFMaxPages)
+	}
+
 	client, err := newEmbeddingClient()
 	if err != nil {
 		return err

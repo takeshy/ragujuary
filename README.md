@@ -18,7 +18,7 @@ A CLI tool and MCP server for RAG (Retrieval-Augmented Generation) using Google'
 **Embedding Mode** (Local RAG):
 - Index files using Gemini Embedding API (`gemini-embedding-2-preview`)
 - **Multimodal support**: images (PNG/JPEG), PDF, video (MP4), audio (MP3/WAV) alongside text
-- **Automatic splitting**: PDFs over 6 pages, audio over 80s, and video over 80s/120s are automatically split into embeddable chunks
+- **Automatic splitting**: PDFs over N pages (configurable, default 6, max 6), audio over 80s, and video over 80s/120s are automatically split into embeddable chunks
 - Local vector storage with cosine similarity search
 - Smart text chunking (paragraph/sentence-aware, Japanese supported)
 - Incremental indexing (only re-embeds changed files)
@@ -246,7 +246,7 @@ ragujuary clean -s mystore -f  # force without confirmation
 ```bash
 # Index files from directories
 # Text: chunked by paragraph/sentence boundaries
-# PDF: auto-split into 6-page chunks
+# PDF: auto-split into N-page chunks (default 6, max 6)
 # Audio: auto-split into 80s segments (requires ffmpeg)
 # Video: auto-split into 80s/120s segments (requires ffmpeg)
 # Images: embedded as-is
@@ -258,6 +258,9 @@ ragujuary embed index -s mystore -e '\.git' -e 'node_modules' ./project ./docs
 # Custom chunking parameters (applies to text files)
 ragujuary embed index -s mystore --chunk-size 500 --chunk-overlap 100 ./docs
 
+# Custom PDF page chunk size (split into 3-page chunks instead of 6)
+ragujuary embed index -s mystore --pdf-pages 3 ./docs
+
 # Use a different model/dimension
 ragujuary embed index -s mystore --model gemini-embedding-2-preview --dimension 1536 ./docs
 
@@ -267,7 +270,7 @@ ragujuary embed index -s mystore --embed-url http://localhost:11434 --model nomi
 
 Indexing is incremental: only files with changed checksums are re-embedded.
 
-**Gemini backend**: Images, PDF, video, and audio are embedded as multimodal vectors. PDFs exceeding 6 pages are split into page-range chunks, and audio/video files exceeding the duration limit are split into time-range segments using ffmpeg. Search results include page/time labels for split files.
+**Gemini backend**: Images, PDF, video, and audio are embedded as multimodal vectors. PDFs exceeding the page limit (configurable via `--pdf-pages`, default 6, max 6) are split into page-range chunks, and audio/video files exceeding the duration limit are split into time-range segments using ffmpeg. Search results include page/time labels for split files.
 
 **Text-only backends (Ollama, etc.)**: PDFs are automatically text-extracted and indexed as text chunks (searchable with content display). Images, audio, and video are skipped with a warning.
 
@@ -383,6 +386,7 @@ Upload a file to a store. Embedding stores index content locally; FileSearch sto
 | `chunk_size` | integer | No | Chunk size in characters (default: 1000, embedding stores only) |
 | `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200, embedding stores only) |
 | `dimension` | integer | No | Embedding dimensionality (default: 768, embedding stores only) |
+| `pdf_max_pages` | integer | No | Max pages per PDF chunk (1-6, default: 6, embedding stores only) |
 
 ##### `query` - Query documents
 
@@ -455,6 +459,7 @@ Upload/index files from directories to a store. Auto-detects store type: embeddi
 | `chunk_size` | integer | No | Chunk size in characters (default: 1000, embedding stores only) |
 | `chunk_overlap` | integer | No | Chunk overlap in characters (default: 200, embedding stores only) |
 | `dimension` | integer | No | Embedding dimensionality (default: 768, embedding stores only) |
+| `pdf_max_pages` | integer | No | Max pages per PDF chunk (1-6, default: 6, embedding stores only) |
 
 #### HTTP Authentication
 
@@ -518,7 +523,7 @@ File Search supports a wide range of formats:
 ### Embedding Mode
 - Text: 8,192 tokens per chunk
 - Images: max 6 per request (PNG, JPEG)
-- PDF: 6 pages per embedding request (larger PDFs are automatically split into 6-page chunks)
+- PDF: up to 6 pages per embedding request (configurable via `--pdf-pages`, larger PDFs are automatically split)
 - Video: 120 seconds per request without audio, 80 seconds with audio (longer videos are automatically split using ffmpeg)
 - Audio: 80 seconds per request (longer audio files are automatically split using ffmpeg)
 - Output dimensions: 128-3,072

@@ -10,6 +10,7 @@ type UploadInput struct {
 	ChunkSize    int    `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000) - embedding stores only"`
 	ChunkOverlap int    `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200) - embedding stores only"`
 	Dimension    int    `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768) - embedding stores only"`
+	PDFMaxPages  int    `json:"pdf_max_pages,omitempty" jsonschema:"max pages per PDF chunk (1-6, default: 6) - embedding stores only"`
 }
 
 // UploadOutput represents output from the upload tool
@@ -129,6 +130,7 @@ type UploadDirectoryInput struct {
 	ChunkSize       int      `json:"chunk_size,omitempty" jsonschema:"chunk size in characters (default: 1000) - embedding stores only"`
 	ChunkOverlap    int      `json:"chunk_overlap,omitempty" jsonschema:"chunk overlap in characters (default: 200) - embedding stores only"`
 	Dimension       int      `json:"dimension,omitempty" jsonschema:"embedding dimensionality (default: 768) - embedding stores only"`
+	PDFMaxPages     int      `json:"pdf_max_pages,omitempty" jsonschema:"max pages per PDF chunk (1-6, default: 6) - embedding stores only"`
 }
 
 // UploadDirectoryOutput represents output from the upload_directory tool

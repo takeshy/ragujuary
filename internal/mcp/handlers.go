@@ -18,6 +18,13 @@ import (
 	"github.com/takeshy/ragujuary/internal/store"
 )
 
+func validatePDFMaxPages(pdfMaxPages int) error {
+	if pdfMaxPages < 1 || pdfMaxPages > 6 {
+		return fmt.Errorf("pdf_max_pages must be between 1 and 6, got %d", pdfMaxPages)
+	}
+	return nil
+}
+
 // isEmbedStore checks if a store name corresponds to an embedding store
 func isEmbedStore(name string) bool {
 	index, _, err := rag.LoadIndex(name)
@@ -137,6 +144,12 @@ func (s *Server) handleUploadEmbed(ctx context.Context, storeName string, input 
 	if input.Dimension > 0 {
 		config.Dimension = input.Dimension
 	}
+	if input.PDFMaxPages != 0 {
+		if err := validatePDFMaxPages(input.PDFMaxPages); err != nil {
+			return nil, output, err
+		}
+		config.PDFMaxPages = input.PDFMaxPages
+	}
 
 	// Multimodal path
 	if input.MIMEType != "" && input.IsBase64 {
@@ -162,7 +175,7 @@ func (s *Server) handleUploadEmbed(ctx context.Context, storeName string, input 
 		chunks := 1
 		if input.MIMEType == "application/pdf" {
 			if pageCount, err := pdfutil.PageCount(data); err == nil {
-				chunks = (pageCount + pdfutil.DefaultMaxPages - 1) / pdfutil.DefaultMaxPages
+				chunks = (pageCount + config.PDFMaxPages - 1) / config.PDFMaxPages
 			}
 		} else if idx, _, loadErr := rag.LoadIndex(storeName); loadErr == nil && idx != nil {
 			count := 0
@@ -817,6 +830,12 @@ func (s *Server) handleUploadDirectoryEmbed(ctx context.Context, storeName strin
 	}
 	if input.Dimension > 0 {
 		config.Dimension = input.Dimension
+	}
+	if input.PDFMaxPages != 0 {
+		if err := validatePDFMaxPages(input.PDFMaxPages); err != nil {
+			return nil, output, err
+		}
+		config.PDFMaxPages = input.PDFMaxPages
 	}
 
 	result, err := s.ragEngine.Index(input.Directories, input.ExcludePatterns, storeName, config)

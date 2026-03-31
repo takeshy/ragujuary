@@ -22,6 +22,7 @@ type Config struct {
 	ChunkOverlap int
 	TopK         int
 	MinScore     float64
+	PDFMaxPages  int
 }
 
 // DefaultConfig returns a Config with sensible defaults
@@ -33,6 +34,7 @@ func DefaultConfig() Config {
 		ChunkOverlap: 200,
 		TopK:         5,
 		MinScore:     0.3,
+		PDFMaxPages:  pdfutil.DefaultMaxPages,
 	}
 }
 
@@ -57,6 +59,28 @@ func NewEngine(embeddingClient embedding.Client) *Engine {
 	return &Engine{
 		embeddingClient: embeddingClient,
 	}
+}
+
+func shouldReindexForPDFPageLimit(index *RagIndex, config Config, fi fileutil.FileInfo, supportsMultimodal bool) bool {
+	if !supportsMultimodal || fi.MimeType != "application/pdf" {
+		return false
+	}
+	return index != nil && index.EffectivePDFMaxPages() != config.PDFMaxPages
+}
+
+func shouldReindexForTextChunkConfig(index *RagIndex, config Config, fi fileutil.FileInfo, supportsMultimodal bool) bool {
+	if index == nil {
+		return false
+	}
+	if index.EffectiveChunkSize() == config.ChunkSize && index.EffectiveChunkOverlap() == config.ChunkOverlap {
+		return false
+	}
+
+	ct := fileutil.ClassifyContent(fi.MimeType)
+	if !fileutil.IsMultimodal(ct) {
+		return true
+	}
+	return ct == "pdf" && !supportsMultimodal
 }
 
 // Index indexes files from directories into the local embedding store
@@ -141,7 +165,14 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		dim := existingIndex.Dimension
 		for i, meta := range existingIndex.Meta {
 			checksum, scanned := newChecksums[meta.FilePath]
-			if !scanned || checksum == oldChecksums[meta.FilePath] {
+			fi, haveInfo := fileInfoMap[meta.FilePath]
+			pdfConfigChanged := false
+			textChunkConfigChanged := false
+			if scanned && haveInfo {
+				pdfConfigChanged = shouldReindexForPDFPageLimit(existingIndex, config, fi, supportsMultimodal)
+				textChunkConfigChanged = shouldReindexForTextChunkConfig(existingIndex, config, fi, supportsMultimodal)
+			}
+			if !scanned || (checksum == oldChecksums[meta.FilePath] && !pdfConfigChanged && !textChunkConfigChanged) {
 				unchangedMeta = append(unchangedMeta, meta)
 				vec := make([]float32, dim)
 				copy(vec, existingVectors[i*dim:(i+1)*dim])
@@ -153,8 +184,11 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 	// Find changed/new files
 	result := &IndexResult{}
 	for filePath, checksum := range newChecksums {
+		fi := fileInfoMap[filePath]
+		pdfConfigChanged := shouldReindexForPDFPageLimit(existingIndex, config, fi, supportsMultimodal)
+		textChunkConfigChanged := shouldReindexForTextChunkConfig(existingIndex, config, fi, supportsMultimodal)
 		if oldChecksum, exists := oldChecksums[filePath]; exists {
-			if checksum == oldChecksum {
+			if checksum == oldChecksum && !pdfConfigChanged && !textChunkConfigChanged {
 				result.SkippedFiles++
 			} else {
 				changedFiles = append(changedFiles, filePath)
@@ -273,9 +307,9 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 
 		ct := fileutil.ClassifyContent(fi.MimeType)
 
-		// PDF: split into page chunks to stay within Gemini's 6-page limit
+		// PDF: split into page chunks (configurable, max 6 pages per chunk)
 		if fi.MimeType == "application/pdf" {
-			chunks, err := pdfutil.SplitPages(data, pdfutil.DefaultMaxPages)
+			chunks, err := pdfutil.SplitPages(data, config.PDFMaxPages)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to split PDF %s: %v\n", fi.Path, err)
 				delete(finalChecksums, fi.Path)
@@ -485,6 +519,9 @@ func (e *Engine) Index(dirs []string, excludePatterns []string, storeName string
 		Dimension:      dimension,
 		FileChecksums:  finalChecksums,
 		EmbeddingModel: config.Model,
+		ChunkSize:      config.ChunkSize,
+		ChunkOverlap:   config.ChunkOverlap,
+		PDFMaxPages:    config.PDFMaxPages,
 	}
 
 	if err := SaveIndex(storeName, index, flatVectors); err != nil {
@@ -602,6 +639,9 @@ func (e *Engine) IndexContent(storeName, fileName, content string, config Config
 		Dimension:      dimension,
 		FileChecksums:  checksums,
 		EmbeddingModel: config.Model,
+		ChunkSize:      config.ChunkSize,
+		ChunkOverlap:   config.ChunkOverlap,
+		PDFMaxPages:    config.PDFMaxPages,
 	}
 
 	return SaveIndex(storeName, index, flatVectors)
@@ -643,9 +683,9 @@ func (e *Engine) IndexMultimodalContent(storeName, fileName string, data []byte,
 
 	ct := fileutil.ClassifyContent(mimeType)
 
-	// PDF: split into page chunks to stay within Gemini's 6-page limit
+	// PDF: split into page chunks (configurable, max 6 pages per chunk)
 	if mimeType == "application/pdf" {
-		chunks, err := pdfutil.SplitPages(data, pdfutil.DefaultMaxPages)
+		chunks, err := pdfutil.SplitPages(data, config.PDFMaxPages)
 		if err != nil {
 			return fmt.Errorf("failed to split PDF: %w", err)
 		}
@@ -798,6 +838,9 @@ func (e *Engine) IndexMultimodalContent(storeName, fileName string, data []byte,
 		Dimension:      dimension,
 		FileChecksums:  checksums,
 		EmbeddingModel: config.Model,
+		ChunkSize:      config.ChunkSize,
+		ChunkOverlap:   config.ChunkOverlap,
+		PDFMaxPages:    config.PDFMaxPages,
 	}
 
 	return SaveIndex(storeName, index, flatVectors)

@@ -31,7 +31,34 @@ type RagIndex struct {
 	Dimension      int               `json:"dimension"`
 	FileChecksums  map[string]string `json:"file_checksums"`
 	EmbeddingModel string            `json:"embedding_model"`
+	ChunkSize      int               `json:"chunk_size,omitempty"`
+	ChunkOverlap   int               `json:"chunk_overlap,omitempty"`
+	PDFMaxPages    int               `json:"pdf_max_pages,omitempty"`
 	FormatVersion  int               `json:"format_version"`
+}
+
+func (r *RagIndex) EffectiveChunkSize() int {
+	if r == nil || r.ChunkSize <= 0 {
+		return 1000
+	}
+	return r.ChunkSize
+}
+
+func (r *RagIndex) EffectiveChunkOverlap() int {
+	if r == nil || r.ChunkOverlap < 0 {
+		return 200
+	}
+	if r.ChunkOverlap == 0 {
+		return 0
+	}
+	return r.ChunkOverlap
+}
+
+func (r *RagIndex) EffectivePDFMaxPages() int {
+	if r == nil || r.PDFMaxPages <= 0 {
+		return 6
+	}
+	return r.PDFMaxPages
 }
 
 // storeBaseDir returns the base directory for embedding stores
@@ -243,6 +270,9 @@ func CreateEmptyIndex(storeName string) error {
 	index := &RagIndex{
 		Meta:          []ChunkMeta{},
 		FileChecksums: make(map[string]string),
+		ChunkSize:     1000,
+		ChunkOverlap:  200,
+		PDFMaxPages:   6,
 	}
 	return SaveIndex(storeName, index, nil)
 }

@@ -25,7 +25,7 @@ type QueryInput struct {
 	Question       string   `json:"question" jsonschema:"the question to ask about your documents"`
 	StoreName      string   `json:"store_name" jsonschema:"name of the store (required unless store_names is provided)"`
 	StoreNames     []string `json:"store_names,omitempty" jsonschema:"names of multiple stores to query (alternative to store_name)"`
-	Model          string   `json:"model,omitempty" jsonschema:"model to use (default: gemini-3-flash-preview for FileSearch)"`
+	Model          string   `json:"model,omitempty" jsonschema:"model to use (default: gemini-3.5-flash for FileSearch)"`
 	MetadataFilter string   `json:"metadata_filter,omitempty" jsonschema:"metadata filter expression - FileSearch only"`
 	ShowCitations  bool     `json:"show_citations,omitempty" jsonschema:"include citation details - FileSearch only"`
 	TopK           int      `json:"top_k,omitempty" jsonschema:"number of top results (default: 5) - embedding stores only"`

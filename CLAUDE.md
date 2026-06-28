@@ -25,7 +25,7 @@ make release
 go run .
 ```
 
-Version is set via LDFLAGS in Makefile (currently 0.13.0).
+Version is set via LDFLAGS in Makefile (currently 0.19.0).
 
 ## Architecture
 
@@ -104,8 +104,8 @@ Embedding stores: `~/.ragujuary-embed/<store-name>/` (index.json + vectors.bin)
 ### Embedding API
 - Endpoint: `POST /v1beta/models/{model}:embedContent` (single)
 - Batch: `POST /v1beta/models/{model}:batchEmbedContents`
-- Default model: `gemini-embedding-2-preview` (multimodal, 8192 tokens)
-- Task types: `RETRIEVAL_DOCUMENT` (indexing), `RETRIEVAL_QUERY` (searching), `SEMANTIC_SIMILARITY`, etc.
+- Default model: `gemini-embedding-2` (multimodal, 8192 tokens)
+- Gemini Embedding 2 task instructions are formatted into text automatically for indexing and searching.
 - Output dimensions: 128-3072 (default: 768)
 - Embedding spaces between models are NOT compatible (must re-index when changing model)
 

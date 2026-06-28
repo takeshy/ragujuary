@@ -28,7 +28,7 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults
 func DefaultConfig() Config {
 	return Config{
-		Model:        "gemini-embedding-2-preview",
+		Model:        "gemini-embedding-2",
 		Dimension:    768,
 		ChunkSize:    1000,
 		ChunkOverlap: 200,

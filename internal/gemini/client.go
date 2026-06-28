@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	baseURL            = "https://generativelanguage.googleapis.com/v1beta"
-	uploadBaseURL      = "https://generativelanguage.googleapis.com/upload/v1beta"
-	fileSearchStoreURL = "https://generativelanguage.googleapis.com/v1beta/fileSearchStores"
+	baseURL                  = "https://generativelanguage.googleapis.com/v1beta"
+	uploadBaseURL            = "https://generativelanguage.googleapis.com/upload/v1beta"
+	fileSearchStoreURL       = "https://generativelanguage.googleapis.com/v1beta/fileSearchStores"
+	fileSearchEmbeddingModel = "models/gemini-embedding-2"
 )
 
 // Client is a Gemini API client
@@ -26,10 +27,11 @@ type Client struct {
 
 // FileSearchStore represents a File Search Store
 type FileSearchStore struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"displayName"`
-	CreateTime  string `json:"createTime"`
-	UpdateTime  string `json:"updateTime"`
+	Name           string `json:"name"`
+	DisplayName    string `json:"displayName"`
+	EmbeddingModel string `json:"embeddingModel,omitempty"`
+	CreateTime     string `json:"createTime"`
+	UpdateTime     string `json:"updateTime"`
 }
 
 // FileSearchDocument represents a document in a File Search Store
@@ -115,7 +117,8 @@ func (c *Client) CreateFileSearchStore(displayName string) (*FileSearchStore, er
 	url := fmt.Sprintf("%s?key=%s", fileSearchStoreURL, c.apiKey)
 
 	body := map[string]string{
-		"displayName": displayName,
+		"displayName":    displayName,
+		"embeddingModel": fileSearchEmbeddingModel,
 	}
 	jsonBody, err := json.Marshal(body)
 	if err != nil {

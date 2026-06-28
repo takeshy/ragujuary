@@ -86,7 +86,7 @@ var embedDeletePattern string
 
 func init() {
 	// embed command flags
-	embedCmd.PersistentFlags().StringVar(&embedModel, "model", "gemini-embedding-2-preview", "Embedding model name")
+	embedCmd.PersistentFlags().StringVar(&embedModel, "model", "gemini-embedding-2", "Embedding model name")
 	embedCmd.PersistentFlags().IntVar(&embedDimension, "dimension", 768, "Embedding output dimensionality")
 	embedCmd.PersistentFlags().StringVar(&embedURL, "embed-url", "", "OpenAI-compatible embedding API URL (e.g. http://localhost:11434 for Ollama)")
 	embedCmd.PersistentFlags().StringVar(&embedAPIKey, "embed-api-key", "", "API key for OpenAI-compatible embedding APIs (or set RAGUJUARY_EMBED_API_KEY / OPENAI_API_KEY)")

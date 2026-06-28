@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,35 @@ func isRetryableStatus(statusCode int) bool {
 	return statusCode == http.StatusServiceUnavailable || statusCode == http.StatusTooManyRequests
 }
 
+func isGeminiEmbedding2(model string) bool {
+	model = strings.TrimPrefix(model, "models/")
+	return model == "gemini-embedding-2"
+}
+
+func formatEmbedding2Text(text string, taskType TaskType) string {
+	switch taskType {
+	case TaskRetrievalDocument:
+		return "title: none | text: " + text
+	case TaskRetrievalQuery:
+		return "task: search result | query: " + text
+	case TaskSemanticSimilarity:
+		return "task: sentence similarity | query: " + text
+	case TaskClassification:
+		return "task: classification | query: " + text
+	case TaskClustering:
+		return "task: clustering | query: " + text
+	default:
+		return text
+	}
+}
+
+func applyGeminiEmbedding2TextConfig(model, text string, taskType TaskType) (string, string) {
+	if !isGeminiEmbedding2(model) {
+		return text, string(taskType)
+	}
+	return formatEmbedding2Text(text, taskType), ""
+}
+
 // doEmbedRequest sends an embedContent request and returns the embedding values
 func (c *GeminiClient) doEmbedRequest(model string, reqBody geminiEmbedRequest) ([]float32, error) {
 	url := fmt.Sprintf("%s/models/%s:embedContent?key=%s", geminiBaseURL, model, c.apiKey)
@@ -132,12 +162,13 @@ func (c *GeminiClient) doEmbedRequest(model string, reqBody geminiEmbedRequest) 
 
 // EmbedContent generates an embedding for a single text
 func (c *GeminiClient) EmbedContent(model, text string, taskType TaskType, dimension int) ([]float32, error) {
+	text, taskTypeString := applyGeminiEmbedding2TextConfig(model, text, taskType)
 	reqBody := geminiEmbedRequest{
 		Model: "models/" + model,
 		Content: geminiContent{
 			Parts: []geminiPart{{Text: text}},
 		},
-		TaskType: string(taskType),
+		TaskType: taskTypeString,
 	}
 	if dimension > 0 {
 		reqBody.OutputDimensionality = dimension
@@ -147,6 +178,10 @@ func (c *GeminiClient) EmbedContent(model, text string, taskType TaskType, dimen
 
 // EmbedMultimodalContent generates an embedding for multimodal content (image, PDF, video, audio)
 func (c *GeminiClient) EmbedMultimodalContent(model string, content MultimodalContent, taskType TaskType, dimension int) ([]float32, error) {
+	taskTypeString := string(taskType)
+	if isGeminiEmbedding2(model) {
+		taskTypeString = ""
+	}
 	reqBody := geminiEmbedRequest{
 		Model: "models/" + model,
 		Content: geminiContent{
@@ -157,7 +192,7 @@ func (c *GeminiClient) EmbedMultimodalContent(model string, content MultimodalCo
 				},
 			}},
 		},
-		TaskType: string(taskType),
+		TaskType: taskTypeString,
 	}
 	if dimension > 0 {
 		reqBody.OutputDimensionality = dimension
@@ -171,12 +206,13 @@ func (c *GeminiClient) BatchEmbedContents(model string, texts []string, taskType
 
 	requests := make([]geminiEmbedRequest, len(texts))
 	for i, text := range texts {
+		text, taskTypeString := applyGeminiEmbedding2TextConfig(model, text, taskType)
 		req := geminiEmbedRequest{
 			Model: "models/" + model,
 			Content: geminiContent{
 				Parts: []geminiPart{{Text: text}},
 			},
-			TaskType: string(taskType),
+			TaskType: taskTypeString,
 		}
 		if dimension > 0 {
 			req.OutputDimensionality = dimension

@@ -1,11 +1,11 @@
 package embedding_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"image"
 	"image/color"
 	"image/png"
-	"bytes"
 	"os"
 	"testing"
 
@@ -24,7 +24,7 @@ func TestGeminiEmbedContent_Text(t *testing.T) {
 	key := getAPIKey(t)
 	client := embedding.NewGeminiClient(key)
 
-	vec, err := client.EmbedContent("gemini-embedding-2-preview", "Hello world", embedding.TaskRetrievalDocument, 256)
+	vec, err := client.EmbedContent("gemini-embedding-2", "Hello world", embedding.TaskRetrievalDocument, 256)
 	if err != nil {
 		t.Fatalf("EmbedContent failed: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestGeminiBatchEmbedContents_Text(t *testing.T) {
 	client := embedding.NewGeminiClient(key)
 
 	texts := []string{"Hello world", "Goodbye world", "Test document"}
-	vecs, err := client.BatchEmbedContents("gemini-embedding-2-preview", texts, embedding.TaskRetrievalDocument, 256)
+	vecs, err := client.BatchEmbedContents("gemini-embedding-2", texts, embedding.TaskRetrievalDocument, 256)
 	if err != nil {
 		t.Fatalf("BatchEmbedContents failed: %v", err)
 	}
@@ -67,12 +67,12 @@ func TestGeminiEmbedContent_QueryVsDocument(t *testing.T) {
 	key := getAPIKey(t)
 	client := embedding.NewGeminiClient(key)
 
-	docVec, err := client.EmbedContent("gemini-embedding-2-preview", "The quick brown fox jumps over the lazy dog", embedding.TaskRetrievalDocument, 256)
+	docVec, err := client.EmbedContent("gemini-embedding-2", "The quick brown fox jumps over the lazy dog", embedding.TaskRetrievalDocument, 256)
 	if err != nil {
 		t.Fatalf("EmbedContent (doc) failed: %v", err)
 	}
 
-	queryVec, err := client.EmbedContent("gemini-embedding-2-preview", "What animal jumps?", embedding.TaskRetrievalQuery, 256)
+	queryVec, err := client.EmbedContent("gemini-embedding-2", "What animal jumps?", embedding.TaskRetrievalQuery, 256)
 	if err != nil {
 		t.Fatalf("EmbedContent (query) failed: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestGeminiEmbedMultimodalContent_Image(t *testing.T) {
 		t.Fatalf("failed to encode PNG: %v", err)
 	}
 
-	vec, err := client.EmbedMultimodalContent("gemini-embedding-2-preview", embedding.MultimodalContent{
+	vec, err := client.EmbedMultimodalContent("gemini-embedding-2", embedding.MultimodalContent{
 		MIMEType: "image/png",
 		Data:     buf.Bytes(),
 	}, embedding.TaskRetrievalDocument, 256)
@@ -141,7 +141,7 @@ func TestGeminiEmbedMultimodalContent_CrossModalSearch(t *testing.T) {
 	}
 
 	// Embed image
-	imgVec, err := client.EmbedMultimodalContent("gemini-embedding-2-preview", embedding.MultimodalContent{
+	imgVec, err := client.EmbedMultimodalContent("gemini-embedding-2", embedding.MultimodalContent{
 		MIMEType: "image/png",
 		Data:     buf.Bytes(),
 	}, embedding.TaskRetrievalDocument, 256)
@@ -150,7 +150,7 @@ func TestGeminiEmbedMultimodalContent_CrossModalSearch(t *testing.T) {
 	}
 
 	// Embed text query about the image
-	queryVec, err := client.EmbedContent("gemini-embedding-2-preview", "a blue image", embedding.TaskRetrievalQuery, 256)
+	queryVec, err := client.EmbedContent("gemini-embedding-2", "a blue image", embedding.TaskRetrievalQuery, 256)
 	if err != nil {
 		t.Fatalf("EmbedContent (query) failed: %v", err)
 	}
@@ -208,7 +208,7 @@ startxref
 441
 %%EOF`)
 
-	vec, err := client.EmbedMultimodalContent("gemini-embedding-2-preview", embedding.MultimodalContent{
+	vec, err := client.EmbedMultimodalContent("gemini-embedding-2", embedding.MultimodalContent{
 		MIMEType: "application/pdf",
 		Data:     pdfContent,
 	}, embedding.TaskRetrievalDocument, 256)
@@ -259,7 +259,7 @@ func TestGeminiEmbedContent_Base64RoundTrip(t *testing.T) {
 		t.Fatalf("base64 decode: %v", err)
 	}
 
-	vec, err := client.EmbedMultimodalContent("gemini-embedding-2-preview", embedding.MultimodalContent{
+	vec, err := client.EmbedMultimodalContent("gemini-embedding-2", embedding.MultimodalContent{
 		MIMEType: "image/png",
 		Data:     decoded,
 	}, embedding.TaskRetrievalDocument, 256)

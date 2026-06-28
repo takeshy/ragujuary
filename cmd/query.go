@@ -32,7 +32,7 @@ Example:
 }
 
 func init() {
-	queryCmd.Flags().StringVarP(&queryModel, "model", "m", "gemini-3-flash-preview", "Model to use for generation")
+	queryCmd.Flags().StringVarP(&queryModel, "model", "m", "gemini-3.5-flash", "Model to use for generation")
 	queryCmd.Flags().StringVar(&queryMetadataFilter, "filter", "", "Metadata filter (e.g., 'author=\"John\"')")
 	queryCmd.Flags().BoolVar(&showCitations, "citations", false, "Show citation details")
 	queryCmd.Flags().StringSliceVar(&queryStores, "stores", nil, "Query multiple stores (comma-separated)")

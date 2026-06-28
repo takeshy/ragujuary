@@ -16,7 +16,7 @@ A CLI tool and MCP server for RAG (Retrieval-Augmented Generation) using Google'
 - Sync/fetch for multi-machine workflows
 
 **Embedding Mode** (Local RAG):
-- Index files using Gemini Embedding API (`gemini-embedding-2-preview`)
+- Index files using Gemini Embedding API (`gemini-embedding-2`)
 - **Multimodal support**: images (PNG/JPEG), PDF, video (MP4), audio (MP3/WAV) alongside text
 - **Automatic splitting**: PDFs over N pages (configurable, default 6, max 6), audio over 80s, and video over 80s/120s are automatically split into embeddable chunks
 - Local vector storage with cosine similarity search
@@ -45,10 +45,10 @@ Gemini File Search is a fully managed RAG system built into the Gemini API. Unli
 
 The Gemini Embedding API generates vector representations of content in a unified semantic space, enabling cross-modal search (e.g., find images with text queries):
 
-- Model: `gemini-embedding-2-preview` (multimodal, 8192 tokens)
+- Model: `gemini-embedding-2` (multimodal, 8192 tokens)
 - **Supported modalities**: text, images (PNG/JPEG), PDF, video (MP4/MPEG), audio (MP3/WAV)
 - **Per-request limits**: PDF up to 6 pages, video up to 120s (80s with audio), audio up to 80s — ragujuary automatically splits larger files
-- Task types optimized for retrieval: `RETRIEVAL_DOCUMENT` (indexing), `RETRIEVAL_QUERY` (searching)
+- Retrieval queries and documents are formatted with Gemini Embedding 2 task instructions automatically
 - Configurable output dimensions (128-3072, default 768)
 - Batch embedding for text; individual embedding for multimodal content
 
@@ -138,7 +138,7 @@ ragujuary query -s mystore "What are the main features?"
 # Query multiple stores
 ragujuary query --stores store1,store2 "Search across all docs"
 
-# Use a different model (default: gemini-3-flash-preview)
+# Use a different model (default: gemini-3.5-flash)
 ragujuary query -s mystore -m gemini-2.5-flash "Explain the architecture"
 
 # Show citation details
@@ -262,7 +262,7 @@ ragujuary embed index -s mystore --chunk-size 500 --chunk-overlap 100 ./docs
 ragujuary embed index -s mystore --pdf-pages 3 ./docs
 
 # Use a different model/dimension
-ragujuary embed index -s mystore --model gemini-embedding-2-preview --dimension 1536 ./docs
+ragujuary embed index -s mystore --model gemini-embedding-2 --dimension 1536 ./docs
 
 # Use Ollama (PDFs are text-extracted and indexed; images/audio/video are skipped)
 ragujuary embed index -s mystore --embed-url http://localhost:11434 --model nomic-embed-text ./docs
@@ -397,7 +397,7 @@ Query documents using natural language. Embedding stores use cosine similarity s
 | `store_name` | string | No* | Name of the store |
 | `store_names` | array | No* | Names of multiple stores to query |
 | `question` | string | Yes | The question to ask about your documents |
-| `model` | string | No | Model to use (default: gemini-3-flash-preview for FileSearch) |
+| `model` | string | No | Model to use (default: gemini-3.5-flash for FileSearch) |
 | `metadata_filter` | string | No | Metadata filter expression (FileSearch only) |
 | `show_citations` | boolean | No | Include citation details (FileSearch only) |
 | `top_k` | integer | No | Number of top results (default: 5, embedding stores only) |

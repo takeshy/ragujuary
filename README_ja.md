@@ -16,7 +16,7 @@ Google の Gemini API を使った RAG（Retrieval-Augmented Generation）のた
 - sync/fetch によるマルチマシンワークフロー
 
 **Embedding モード**（ローカル RAG）:
-- Gemini Embedding API によるファイルインデックス（`gemini-embedding-2-preview`）
+- Gemini Embedding API によるファイルインデックス（`gemini-embedding-2`）
 - **マルチモーダル対応**: 画像（PNG/JPEG）、PDF、動画（MP4）、音声（MP3/WAV）をテキストと共にインデックス
 - ローカルベクトルストレージとコサイン類似度検索
 - スマートテキストチャンキング（段落・文境界対応、日本語対応）
@@ -43,9 +43,9 @@ Gemini File Search は、Gemini API に組み込まれたフルマネージド�
 
 Gemini Embedding API は、コンテンツのベクトル表現を統一セマンティック空間に生成し、クロスモーダル検索（テキストで画像を検索など）を可能にします：
 
-- モデル: `gemini-embedding-2-preview`（マルチモーダル、8192トークン）
+- モデル: `gemini-embedding-2`（マルチモーダル、8192トークン）
 - **対応モダリティ**: テキスト、画像（PNG/JPEG）、PDF（6ページまで）、動画（120秒まで）、音声（80秒まで）
-- 検索に最適化されたタスクタイプ: `RETRIEVAL_DOCUMENT`（インデックス時）、`RETRIEVAL_QUERY`（検索時）
+- 検索用のクエリとドキュメントは Gemini Embedding 2 のタスク指示形式に自動整形
 - 出力次元数を設定可能（128-3072、デフォルト768）
 - テキストはバッチ埋め込み、マルチモーダルは個別埋め込み
 
@@ -131,7 +131,7 @@ ragujuary query -s mystore "主な機能は何ですか？"
 # 複数ストアを検索
 ragujuary query --stores store1,store2 "全ドキュメントを横断検索"
 
-# 別のモデルを使用（デフォルト: gemini-3-flash-preview）
+# 別のモデルを使用（デフォルト: gemini-3.5-flash）
 ragujuary query -s mystore -m gemini-2.5-flash "アーキテクチャを説明して"
 
 # 引用の詳細を表示
@@ -250,7 +250,7 @@ ragujuary embed index -s mystore --chunk-size 500 --chunk-overlap 100 ./docs
 ragujuary embed index -s mystore --pdf-pages 3 ./docs
 
 # 別のモデル/次元数を使用
-ragujuary embed index -s mystore --model gemini-embedding-2-preview --dimension 1536 ./docs
+ragujuary embed index -s mystore --model gemini-embedding-2 --dimension 1536 ./docs
 
 # Ollama を使用（テキストのみ、マルチモーダルファイルは警告付きでスキップ）
 ragujuary embed index -s mystore --embed-url http://localhost:11434 --model nomic-embed-text ./docs
@@ -382,7 +382,7 @@ MCP サーバーは 8 つの統合ツールを公開しています。各ツー�
 | `store_name` | string | いいえ* | ストアの名前 |
 | `store_names` | array | いいえ* | 複数のストアの名前 |
 | `question` | string | はい | ドキュメントに対する質問 |
-| `model` | string | いいえ | 使用するモデル（デフォルト: gemini-3-flash-preview、FileSearch のみ） |
+| `model` | string | いいえ | 使用するモデル（デフォルト: gemini-3.5-flash、FileSearch のみ） |
 | `metadata_filter` | string | いいえ | メタデータフィルタ式（FileSearch のみ） |
 | `show_citations` | boolean | いいえ | 引用の詳細を含める（FileSearch のみ） |
 | `top_k` | integer | いいえ | 上位結果数（デフォルト: 5、Embedding ストアのみ） |

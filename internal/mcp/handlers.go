@@ -249,7 +249,7 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest, inpu
 	// FileSearch mode
 	model := input.Model
 	if model == "" {
-		model = "gemini-3-flash-preview"
+		model = "gemini-3.5-flash"
 	}
 
 	var storeNames []string

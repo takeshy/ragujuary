@@ -19,6 +19,9 @@ Google の Gemini API を使った RAG（Retrieval-Augmented Generation）のた
 - Gemini Embedding API によるファイルインデックス（`gemini-embedding-2`）
 - **マルチモーダル対応**: 画像（PNG/JPEG）、PDF、動画（MP4）、音声（MP3/WAV）をテキストと共にインデックス
 - ローカルベクトルストレージとコサイン類似度検索
+- ハイブリッド検索（BM25 + ベクトル + RRF）とGemini Decision 1のテキストリランキングを既定ONに。それぞれOFFも指定可能
+- 日本語/CJK・識別子の検索、採点失敗時の警告付き復帰、採点できないメディアの順位保護
+- 「見つかるまで検索」：候補をグループごとに採点し、関連情報が見つかるまで検索可能
 - スマートテキストチャンキング（段落・文境界対応、日本語対応）
 - 差分インデックス（変更されたファイルのみ再エンベディング）
 - チャンクサイズ、オーバーラップ、top-K、最小スコアを設定可能
@@ -99,6 +102,12 @@ ragujuary list -s fileSearchStores/mystore-abc123xyz --remote
 ragujuary list --stores
 ```
 
+### 1.0への更新
+
+- ローカル検索はハイブリッド検索とGemini Decision 1のリランキングが既定ONになります。採点対象のテキストをGeminiへ送信し、API利用が追加されます。ベクトル検索だけを使う場合は `--search-mode vector --rerank=false`、MCPでは `"search_mode": "vector", "rerank": false` を指定してください。
+- FileSearchの生成モデルの既定値は `gemini-4-hydrogen` です。Gemini 1.x／2.xの生成モデル指定は移行先を示すエラーになるため、現行モデルIDを指定してください。
+- 既存のEmbedding索引は再構築なしで使えます。BM25キャッシュは必要時に作成し、外部索引のディレクトリは変更しません。Embeddingモデル自体を変更する場合にだけ再構築が必要です。
+
 ## 使い方
 
 ### FileSearch モード
@@ -131,12 +140,17 @@ ragujuary query -s mystore "主な機能は何ですか？"
 # 複数ストアを検索
 ragujuary query --stores store1,store2 "全ドキュメントを横断検索"
 
-# 別のモデルを使用（デフォルト: gemini-3.5-flash）
-ragujuary query -s mystore -m gemini-2.5-flash "アーキテクチャを説明して"
+# 別のモデルを使用（デフォルト: gemini-4-hydrogen）
+ragujuary query -s mystore -m gemini-4-carbon "アーキテクチャを説明して"
+
+# Gemini 4 Argonを使用
+ragujuary query -s mystore -m gemini-4-argon "アーキテクチャを説明して"
 
 # 引用の詳細を表示
 ragujuary query -s mystore --citations "認証はどのように機能しますか？"
 ```
+
+FileSearchの生成モデルの既定値は `gemini-4-hydrogen` です。`gemini-4-argon`・`gemini-4-carbon`・`gemini-3.8-flash` も明示指定できます。Gemini 1.x／2.xの生成モデルはragujuaryの対応対象から外し、指定された場合は別モデルへ黙って置換せずエラーを返します。Google公式の[現行モデル](https://aistudio.google.com/docs/models)と[廃止予定](https://aistudio.google.com/docs/deprecations)も参照してください。Embeddingは `gemini-embedding-2`、リランキングは `gemini-decision-1` を使用します。生成モデルの変更では再インデックスは不要です。既存ローカル索引のEmbeddingモデルは、ベクトル空間の互換性を保つため記録済みの値を使い続けます。Embeddingモデルを変更する場合は索引の再構築が必要です。
 
 #### ストアとファイルを一覧表示
 
@@ -264,7 +278,7 @@ ragujuary embed index -s mystore --embed-url http://localhost:11434 --model nomi
 テキスト質問で全インデックスコンテンツ（テキストチャンク＋マルチモーダルファイル）を横断検索します（同一埋め込み空間でのクロスモーダル検索）。
 
 ```bash
-# セマンティック検索（テキストとマルチモーダルコンテンツを横断検索）
+# ハイブリッド検索＋Geminiリランキング（既定）
 ragujuary embed query -s mystore "認証はどのように機能しますか？"
 
 # 画像を説明で検索
@@ -273,11 +287,39 @@ ragujuary embed query -s mystore "猫の写真"
 # 結果をカスタマイズ
 ragujuary embed query -s mystore --top-k 10 --min-score 0.5 "エラーハンドリングパターン"
 
+# ハイブリッド検索：意味検索とキーワード検索の順位を統合
+ragujuary embed query -s mystore --search-mode hybrid "PRJ-123 認証エラー"
+
+# Gemini Decisions APIで候補を採点してから上位5件を取得
+ragujuary embed query -s mystore --search-mode hybrid --rerank --top-k 5 "認証の設定方法"
+
+# 関連する回答が見つかるまで次の候補グループを採点
+ragujuary embed query -s mystore --search-until-found "認証の設定方法"
+
+# ハイブリッド検索を保ち、リランキングをOFF
+ragujuary embed query -s mystore --rerank=false "認証の設定方法"
+
+# ハイブリッド検索とリランキングを両方OFF
+ragujuary embed query -s mystore --search-mode vector --rerank=false "認証の設定方法"
+
+# Embedding APIを使わないBM25検索（APIキー不要）
+ragujuary embed query -s mystore --search-mode keyword --rerank=false "ERR_AUTH_42"
+
 # 外部ツールで作成された RAG インデックスを検索
 ragujuary embed query --dir /path/to/external/rag/store "検索クエリ"
 ```
 
 `--dir` フラグを使うと、他のツールで作成された RAG インデックスを検索できます。snake_case（ragujuary形式）と camelCase の両方の JSON フィールド名を自動検出します。`--dir` 指定時は `--store` は不要です。
+
+`--search-mode` の既定値は `hybrid` で、ベクトルとBM25の順位をRRFで統合します。`--search-mode vector` でハイブリッド検索をOFFにでき、`--search-mode keyword` ではBM25だけを使います。`--candidate-k` は**各検索の候補数**（既定30件、最大1000件）、`--rrf-k` はRRFの定数（既定60）です。`--min-score` はベクトル類似度だけに適用するため、閾値以下でもキーワード一致の候補を取得できます。検索スコアはhybridではRRF、keywordではBM25、vectorではcosine類似度です。ハイブリッド結果には取得経路 `source: vector` / `bm25` / `both` を表示します。リランキングが有効な場合、最終的な `--top-k` は採点後に適用します。
+
+BM25の検索対象はチャンク本文です。全角文字を正規化し、`PRJ-123` や `snake_case` は識別子全体と分割要素の両方を保持します。日本語などCJKには、共通ライブラリのフォールバックと同じ、重なりのある2文字区切りを使います。再埋め込みは不要です。通常ストアでは初回に `bm25-ragujuary.json` を構築し、以降は変更のないチャンクのトークン頻度を再利用します。追加・編集・削除は次のキーワード／ハイブリッド検索時に反映されます。キャッシュの欠損・破損は自動再構築し、保存できなくても検索は継続します。vectorではキャッシュを読み書きせず、外部インデックスではメモリ上に構築して外部ディレクトリを変更しません。
+
+リランキングは**既定ON**で、[Gemini Decisions API](https://aistudio.google.com/docs/decisions-api)の `gemini-decision-1` を使います。`--rerank=false` でOFFにできます。採点には `GEMINI_API_KEY` または `--api-key` を使用します（Ollamaなど別のEmbeddingバックエンドを使う場合も同じです）。`--rerank-candidate-k` は採点対象の候補数で、既定40件、最大1000件、最低Top K件です。通常のハイブリッド検索の各検索候補数は独立した設定です。関連度は0 無関係／1 キーワードだけ一致／2 部分的に有用／3 直接回答の0〜3点で、小数にも対応します。同点は元の検索順位を保ち、元の検索スコアも保持します。**採点・並べ替えの後**にTop Kを適用します。キー未設定・API失敗・採点欠損・タイムアウト時は、**警告付きで元の検索順位のTop K件を返します**。途中までの並べ替えは残しません。CLIでは標準エラー、MCPでは `warnings` と回答テキストの両方に警告を出します。ユーザーによる検索キャンセルはエラーとして扱います。各候補グループの採点にはリトライを含め20秒の期限があり、大きなリクエストは本文を切り捨てず分割します。既定では採点対象のテキストをGeminiへ送信し、通信時間と入力トークンの利用量が増えます。キーワード検索やローカルEmbeddingだけで完結させる場合は `--rerank=false` を指定してください。
+
+採点対象はテキストと抽出済みPDF本文です。画像・音声・動画、ラベルだけのスキャンPDF、空のチャンクは**ファイル名やラベルだけで採点しません**。これらは元の検索順位の位置を固定し、採点できた候補だけを残りの位置の中で並べ替えます。`rerank_skipped_reason` に未採点の理由を付け、順位を保護した候補があることも警告します。採点のためにバイナリファイルを読み込み・送信することはありません。ベクトル検索は引き続き全モダリティに対応します。FileSearchモードではマネージド検索を使い、これらのローカル検索設定は適用しません。
+
+`--search-until-found` は任意指定で、既定OFFです。クエリの埋め込みと候補取得を**一度だけ**行い、通常の `--candidate-k` とは別に、候補を**統合後最大1000件**まで広げます（統合前は各検索最大1000件）。`--rerank-candidate-k`（最低Top K件）ずつ順番に採点し、**2点以上**が見つかった最初のグループで停止します。そのグループの2点以上の結果だけを採点順に最大Top K件返し、見つからなければ結果は空になります。1000件の検索上限に達した場合は警告します。グループ内でAPI失敗や採点できない候補があれば検索を止め、**元の検索順位のTop K件を警告付きで返します**。未採点は低い関連度の証拠として扱いません。`--search-until-found --rerank=false` の組み合わせはエラーです。確認するグループが増えるほどAPI呼び出しと入力トークンの利用量が増えます。
 
 #### インデックス済みファイルを一覧表示
 
@@ -375,20 +417,28 @@ MCP サーバーは 8 つの統合ツールを公開しています。各ツー�
 
 ##### `query` - ドキュメントを検索
 
-自然言語でドキュメントを検索します。Embedding ストアではコサイン類似度検索、FileSearch ストアでは Gemini の引用付き生成を使用します。
+自然言語でドキュメントを検索します。Embeddingストアではハイブリッド検索とGemini Decision 1のリランキングが既定ONで、それぞれ明示的にOFFにできます。「見つかるまで検索」も指定可能です。FileSearchストアではGeminiの引用付き生成を使用します。
 
 | パラメータ | 型 | 必須 | 説明 |
 |-----------|------|------|-------------|
 | `store_name` | string | いいえ* | ストアの名前 |
 | `store_names` | array | いいえ* | 複数のストアの名前 |
 | `question` | string | はい | ドキュメントに対する質問 |
-| `model` | string | いいえ | 使用するモデル（デフォルト: gemini-3.5-flash、FileSearch のみ） |
+| `model` | string | いいえ | 生成モデル（既定: gemini-4-hydrogen、代替: gemini-4-argon／gemini-4-carbon、FileSearchのみ） |
 | `metadata_filter` | string | いいえ | メタデータフィルタ式（FileSearch のみ） |
 | `show_citations` | boolean | いいえ | 引用の詳細を含める（FileSearch のみ） |
 | `top_k` | integer | いいえ | 上位結果数（デフォルト: 5、Embedding ストアのみ） |
-| `min_score` | number | いいえ | 最小類似度スコア（デフォルト: 0.3、Embedding ストアのみ） |
+| `min_score` | number | いいえ | ベクトルの最小類似度（既定0.3、明示的な0も指定可能。キーワード一致には適用しない） |
+| `search_mode` | string | いいえ | `hybrid`（既定）、`vector`、`keyword`（Embeddingストアのみ） |
+| `candidate_k` | integer | いいえ | ハイブリッド検索の各検索候補数（既定30、最大1000） |
+| `rrf_k` | number | いいえ | RRFの定数（既定60） |
+| `rerank` | boolean | いいえ | Gemini Decision 1でテキストを採点（既定true、明示的なfalseでOFF） |
+| `rerank_candidate_k` | integer | いいえ | リランキング候補数（既定40、最大1000、最低Top K件） |
+| `search_until_found` | boolean | いいえ | 関連度2点以上が見つかるまでグループごとに採点（既定false、リランキング必須、最大1000候補） |
 
 *`store_name` または `store_names` のいずれかが必要です。
+
+Embeddingストアでは構造化された `results` も返し、全文・ファイル／ページ情報・検索スコア `score`・取得経路 `retrieval_source`・関連度 `rerank_score`（0〜3）・保護された候補の未採点理由 `rerank_skipped_reason` を含みます。取得経路はハイブリッド検索時、関連度は採点時だけ追加します。復帰・メディア保護・検索上限の警告は `warnings` に入ります。両方の既定設定をOFFにするには `"search_mode": "vector", "rerank": false` を指定してください。`rerank` 未指定ならONです。FileSearchストアに上記のローカル検索設定を指定するとエラーになります。
 
 ##### `list` - ストア内のドキュメントを一覧表示
 

@@ -247,9 +247,12 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest, inpu
 	}
 
 	// FileSearch mode
-	model := input.Model
-	if model == "" {
-		model = "gemini-3.5-flash"
+	if input.SearchMode != "" || input.Rerank != nil || input.SearchUntilFound || input.CandidateK != 0 || input.RerankCandidateK != 0 || input.RRFK != 0 {
+		return nil, output, fmt.Errorf("local search options (search_mode, rerank, search_until_found, candidate_k, rerank_candidate_k, rrf_k) are supported only for embedding stores")
+	}
+	model, err := gemini.ResolveQueryModel(input.Model)
+	if err != nil {
+		return nil, output, err
 	}
 
 	var storeNames []string
@@ -316,17 +319,35 @@ func (s *Server) handleQueryEmbed(ctx context.Context, storeName string, input Q
 	if input.TopK > 0 {
 		config.TopK = input.TopK
 	}
-	if input.MinScore > 0 {
-		config.MinScore = input.MinScore
+	if input.SearchMode != "" {
+		config.SearchMode = input.SearchMode
+	}
+	if input.Rerank != nil {
+		config.Rerank = *input.Rerank
+	}
+	config.SearchUntilFound = input.SearchUntilFound
+	config.OnWarning = func(message string) { output.Warnings = append(output.Warnings, message) }
+	config.CandidateK = input.CandidateK
+	config.RerankCandidateK = input.RerankCandidateK
+	config.RRFK = input.RRFK
+	if input.TopK < 0 {
+		return nil, output, fmt.Errorf("top_k must be non-negative")
+	}
+	if input.MinScore != nil {
+		config.MinScore = *input.MinScore
 	}
 
-	results, err := s.ragEngine.Query(input.Question, storeName, config)
+	results, err := s.ragEngine.QueryContext(ctx, input.Question, storeName, config)
 	if err != nil {
 		return nil, output, fmt.Errorf("query failed: %w", err)
 	}
+	output.Results = results
 
 	if len(results) == 0 {
 		output.Answer = "No results found."
+		if len(output.Warnings) > 0 {
+			output.Answer = "Warning: " + strings.Join(output.Warnings, "\nWarning: ") + "\n\n" + output.Answer
+		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{Text: output.Answer},
@@ -335,12 +356,29 @@ func (s *Server) handleQueryEmbed(ctx context.Context, storeName string, input Q
 	}
 
 	var textBuilder strings.Builder
+	for _, warning := range output.Warnings {
+		textBuilder.WriteString("Warning: " + warning + "\n\n")
+	}
 	for _, r := range results {
 		text := r.Text
-		if len(text) > 300 {
-			text = text[:300] + "..."
+		if runes := []rune(text); len(runes) > 300 {
+			text = string(runes[:300]) + "..."
 		}
-		textBuilder.WriteString(fmt.Sprintf("[%.4f] %s: %s\n\n", r.Score, r.FilePath, text))
+		rerankInfo := ""
+		if r.RerankScore != nil {
+			rerankInfo = fmt.Sprintf("; rerank: %.4f/3", *r.RerankScore)
+		}
+		if r.RerankSkippedReason != "" {
+			rerankInfo += "; rerank skipped: " + r.RerankSkippedReason + " (original rank kept)"
+		}
+		if r.RetrievalSource != "" {
+			rerankInfo += "; source: " + r.RetrievalSource
+		}
+		pageInfo := ""
+		if r.PageLabel != "" {
+			pageInfo = " (" + r.PageLabel + ")"
+		}
+		textBuilder.WriteString(fmt.Sprintf("[%.4f%s] %s%s: %s\n\n", r.Score, rerankInfo, r.FilePath, pageInfo, text))
 	}
 	output.Answer = textBuilder.String()
 

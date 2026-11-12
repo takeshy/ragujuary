@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
@@ -20,6 +21,119 @@ import (
 	"github.com/takeshy/ragujuary/internal/rag"
 	"github.com/takeshy/ragujuary/internal/store"
 )
+
+type testQueryReranker struct{ candidates int }
+
+func (r *testQueryReranker) Rerank(ctx context.Context, query string, results []rag.SearchResult) ([]rag.SearchResult, error) {
+	r.candidates = len(results)
+	for i := range results {
+		score := float64(i) / 2
+		results[i].RerankScore = &score
+	}
+	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+		results[i], results[j] = results[j], results[i]
+	}
+	return results, nil
+}
+
+func TestHandleQueryEmbeddingKeywordAndRerank(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	index := &rag.RagIndex{Dimension: 2, Meta: []rag.ChunkMeta{
+		{FilePath: "a.md", Text: "認証エラー one"},
+		{FilePath: "b.pdf", Text: "認証エラー two", ContentType: "pdf", PageLabel: "pages 2-3 of 5"},
+		{FilePath: "c.md", Text: "猫の写真"},
+	}}
+	if err := rag.SaveIndex("search", index, []float32{1, 0, 1, 0, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	r := &testQueryReranker{}
+	// A nil embedding client ensures keyword mode makes no embedding request.
+	s := &Server{ragEngine: rag.NewEngine(nil).WithReranker(r)}
+	_, output, err := s.handleQuery(context.Background(), nil, QueryInput{StoreName: "search", Question: "認証エラー", SearchMode: "keyword", TopK: 1, CandidateK: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.candidates != 2 || len(output.Results) != 1 || output.Results[0].FilePath != "b.pdf" || output.Results[0].RerankScore == nil || !strings.Contains(output.Answer, "rerank:") || !strings.Contains(output.Answer, "pages 2-3 of 5") {
+		t.Fatalf("unexpected query result: %+v, candidates=%d", output, r.candidates)
+	}
+	_, _, err = s.handleQuery(context.Background(), nil, QueryInput{StoreName: "search", Question: "q", SearchMode: "bad-mode"})
+	if err == nil || !strings.Contains(err.Error(), "search mode") {
+		t.Fatalf("invalid search mode: %v", err)
+	}
+}
+
+func TestQueryInputExplicitZeroMinScore(t *testing.T) {
+	var input QueryInput
+	if err := json.Unmarshal([]byte(`{"question":"q","store_name":"s","min_score":0}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.MinScore == nil || *input.MinScore != 0 {
+		t.Fatal("explicit zero threshold was lost")
+	}
+	if err := json.Unmarshal([]byte(`{"question":"q","store_name":"s"}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	// Unmarshal into a fresh value to represent an actual new tool call.
+	var omitted QueryInput
+	if err := json.Unmarshal([]byte(`{"question":"q","store_name":"s"}`), &omitted); err != nil {
+		t.Fatal(err)
+	}
+	if omitted.MinScore != nil {
+		t.Fatal("omitted threshold must use the default")
+	}
+}
+
+func TestHandleQueryDefaultRerankExplicitFalseAndFallbackWarnings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	index := &rag.RagIndex{Dimension: 2, Meta: []rag.ChunkMeta{{Text: "needle a", FilePath: "a.md"}, {Text: "needle b", FilePath: "b.md"}}}
+	if err := rag.SaveIndex("defaults", index, []float32{1, 0, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	r := &testQueryReranker{}
+	s := &Server{ragEngine: rag.NewEngine(testEmbeddingClient{}).WithReranker(r)}
+	// Decoding actual input verifies that omission and explicit false are distinct.
+	var input QueryInput
+	if err := json.Unmarshal([]byte(`{"store_name":"defaults","question":"needle","top_k":1}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	_, output, err := s.handleQuery(context.Background(), nil, input)
+	if err != nil || len(output.Results) != 1 || output.Results[0].FilePath != "b.md" || output.Results[0].RetrievalSource != "bm25" || r.candidates != 2 {
+		t.Fatalf("defaults: %+v err=%v", output, err)
+	}
+	if err := json.Unmarshal([]byte(`{"store_name":"defaults","question":"needle","top_k":1,"rerank":false}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	r.candidates = 0
+	_, output, err = s.handleQuery(context.Background(), nil, input)
+	if err != nil || len(output.Results) != 1 || output.Results[0].FilePath != "a.md" || output.Results[0].RerankScore != nil || len(output.Warnings) != 0 || r.candidates != 0 {
+		t.Fatalf("explicit off: %+v err=%v", output, err)
+	}
+	s.ragEngine = rag.NewEngine(testEmbeddingClient{})
+	input.Rerank = nil
+	_, output, err = s.handleQuery(context.Background(), nil, input)
+	if err != nil || len(output.Results) != 1 || output.Results[0].FilePath != "a.md" || len(output.Warnings) != 1 || !strings.Contains(output.Answer, "Warning:") {
+		t.Fatalf("fallback warnings: %+v err=%v", output, err)
+	}
+}
+
+func TestHandleQuerySearchUntilFoundAndDisabledRerankConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	index := &rag.RagIndex{Dimension: 2, Meta: []rag.ChunkMeta{{Text: "needle a"}, {Text: "needle b"}}}
+	if err := rag.SaveIndex("repeat", index, []float32{1, 0, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{ragEngine: rag.NewEngine(testEmbeddingClient{}).WithReranker(&testQueryReranker{})}
+	input := QueryInput{StoreName: "repeat", Question: "needle", SearchUntilFound: true, TopK: 1, RerankCandidateK: 1}
+	_, output, err := s.handleQuery(context.Background(), nil, input)
+	if err != nil || len(output.Results) != 0 || len(output.Warnings) != 0 || output.Answer != "No results found." {
+		t.Fatalf("repeat exhausted: %+v %v", output, err)
+	}
+	off := false
+	input.Rerank = &off
+	if _, _, err := s.handleQuery(context.Background(), nil, input); err == nil || !strings.Contains(err.Error(), "requires reranking") {
+		t.Fatalf("conflicting options must fail: %v", err)
+	}
+}
 
 type testEmbeddingClient struct{}
 

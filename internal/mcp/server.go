@@ -10,6 +10,7 @@ import (
 	"github.com/takeshy/ragujuary/internal/embedding"
 	"github.com/takeshy/ragujuary/internal/gemini"
 	"github.com/takeshy/ragujuary/internal/rag"
+	"github.com/takeshy/ragujuary/internal/rerank"
 	"github.com/takeshy/ragujuary/internal/store"
 )
 
@@ -44,7 +45,7 @@ func NewServer(config ServerConfig, version string) (*Server, error) {
 	} else {
 		embeddingClient = embedding.NewGeminiClient(config.APIKey)
 	}
-	ragEngine := rag.NewEngine(embeddingClient)
+	ragEngine := rag.NewEngine(embeddingClient).WithReranker(rerank.NewGeminiClient(config.APIKey))
 
 	// Create MCP server
 	mcpServer := mcp.NewServer(&mcp.Implementation{
@@ -74,7 +75,7 @@ func (s *Server) registerTools() {
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "query",
-		Description: "Query documents in a store using natural language. Auto-detects store type: embedding stores use cosine similarity search, FileSearch stores use Gemini's grounded generation with citations.",
+		Description: "Query documents in a store using natural language. Embedding stores default to hybrid vector/BM25 search and Gemini Decision 1 text reranking; each can be disabled. Optional search_until_found scores successive groups until relevance >= 2/3 is found. Scoring failures return original results with warnings, and unscorable media keep their search positions. FileSearch stores use Gemini's grounded generation with citations.",
 	}, s.handleQuery)
 
 	mcp.AddTool(s.mcpServer, &mcp.Tool{

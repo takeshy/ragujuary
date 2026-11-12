@@ -9,20 +9,27 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/takeshy/ragujuary/internal/embedding"
 	"github.com/takeshy/ragujuary/internal/rag"
+	"github.com/takeshy/ragujuary/internal/rerank"
 )
 
 var (
-	embedModel        string
-	embedDimension    int
-	embedChunkSize    int
-	embedChunkOverlap int
-	embedPDFMaxPages  int
-	embedTopK         int
-	embedMinScore     float64
-	embedExclude      []string
-	embedURL          string
-	embedAPIKey       string
-	embedDir          string
+	embedModel            string
+	embedDimension        int
+	embedChunkSize        int
+	embedChunkOverlap     int
+	embedPDFMaxPages      int
+	embedTopK             int
+	embedMinScore         float64
+	embedExclude          []string
+	embedURL              string
+	embedAPIKey           string
+	embedDir              string
+	embedSearchMode       string
+	embedRerank           bool
+	embedSearchUntilFound bool
+	embedCandidateK       int
+	embedRerankCandidateK int
+	embedRRFK             float64
 )
 
 var embedCmd = &cobra.Command{
@@ -32,7 +39,7 @@ var embedCmd = &cobra.Command{
 
 Supports Gemini Embedding API (default) and OpenAI-compatible APIs (Ollama, LM Studio, etc.).
 Unlike the managed FileSearch stores, embedding mode stores vectors locally
-and performs cosine similarity search for retrieval.
+and uses hybrid vector/BM25 search with Gemini reranking by default.
 
 Examples:
   # Use Gemini Embedding API (default)
@@ -55,7 +62,7 @@ Incremental: only re-indexes files whose content has changed.`,
 var embedQueryCmd = &cobra.Command{
 	Use:   "query [question...]",
 	Short: "Query the embedding store",
-	Long:  `Perform a semantic search against the local embedding store using cosine similarity.`,
+	Long:  `Search the local embedding store using hybrid vector/BM25 retrieval and Gemini reranking by default. Use --search-mode vector to disable hybrid retrieval, --rerank=false to disable reranking, or --search-until-found to score successive candidate groups until an answer is found.`,
 	Args:  cobra.MinimumNArgs(1),
 	RunE:  runEmbedQuery,
 }
@@ -101,6 +108,12 @@ func init() {
 	embedQueryCmd.Flags().IntVar(&embedTopK, "top-k", 5, "Number of top results to return")
 	embedQueryCmd.Flags().Float64Var(&embedMinScore, "min-score", 0.3, "Minimum similarity score threshold")
 	embedQueryCmd.Flags().StringVar(&embedDir, "dir", "", "Path to external RAG index directory (overrides --store)")
+	embedQueryCmd.Flags().StringVar(&embedSearchMode, "search-mode", "hybrid", "Search mode: hybrid (vector + BM25 with RRF), vector, or keyword (BM25)")
+	embedQueryCmd.Flags().BoolVar(&embedRerank, "rerank", true, "Rerank indexed text with Gemini Decision 1; use --rerank=false to disable")
+	embedQueryCmd.Flags().BoolVar(&embedSearchUntilFound, "search-until-found", false, "Score successive candidate groups until relevance >= 2/3 is found (requires reranking; max 1000 candidates)")
+	embedQueryCmd.Flags().IntVar(&embedCandidateK, "candidate-k", 30, "Candidates per hybrid search branch (1-1000)")
+	embedQueryCmd.Flags().IntVar(&embedRerankCandidateK, "rerank-candidate-k", 40, "Candidates to rerank (1-1000; raised to top-k if needed)")
+	embedQueryCmd.Flags().Float64Var(&embedRRFK, "rrf-k", 60, "RRF rank constant for hybrid search")
 
 	// list flags
 	embedListCmd.Flags().BoolVar(&embedListStores, "stores", false, "List all embedding stores instead of files")
@@ -146,6 +159,12 @@ func newEmbedConfig() rag.Config {
 	config.PDFMaxPages = embedPDFMaxPages
 	config.TopK = embedTopK
 	config.MinScore = embedMinScore
+	config.SearchMode = embedSearchMode
+	config.Rerank = embedRerank
+	config.SearchUntilFound = embedSearchUntilFound
+	config.CandidateK = embedCandidateK
+	config.RerankCandidateK = embedRerankCandidateK
+	config.RRFK = embedRRFK
 	return config
 }
 
@@ -187,21 +206,35 @@ func runEmbedIndex(cmd *cobra.Command, args []string) error {
 }
 
 func runEmbedQuery(cmd *cobra.Command, args []string) error {
-	client, err := newEmbeddingClient()
-	if err != nil {
+	config := newEmbedConfig()
+	config.OnWarning = func(message string) { fmt.Fprintln(cmd.ErrOrStderr(), "Warning: "+message) }
+	if err := config.ValidateQuery(); err != nil {
 		return err
+	}
+	var client embedding.Client
+	var err error
+	if config.SearchMode != "keyword" {
+		client, err = newEmbeddingClient()
+		if err != nil {
+			return err
+		}
 	}
 
 	question := strings.Join(args, " ")
 
 	engine := rag.NewEngine(client)
-	config := newEmbedConfig()
+	if config.Rerank {
+		key, err := getAPIKey()
+		if err == nil {
+			engine.WithReranker(rerank.NewGeminiClient(key))
+		}
+	}
 
 	var results []rag.SearchResult
 	if embedDir != "" {
-		results, err = engine.QueryDir(question, embedDir, config)
+		results, err = engine.QueryDirContext(cmd.Context(), question, embedDir, config)
 	} else {
-		results, err = engine.Query(question, storeName, config)
+		results, err = engine.QueryContext(cmd.Context(), question, storeName, config)
 	}
 	if err != nil {
 		return err
@@ -221,7 +254,17 @@ func runEmbedQuery(cmd *cobra.Command, args []string) error {
 		if r.PageLabel != "" {
 			pageInfo = fmt.Sprintf(", %s", r.PageLabel)
 		}
-		fmt.Printf("--- Result %d (score: %.4f, file: %s%s%s) ---\n", i+1, r.Score, r.FilePath, typeLabel, pageInfo)
+		rerankInfo := ""
+		if r.RerankScore != nil {
+			rerankInfo = fmt.Sprintf(", rerank: %.4f/3", *r.RerankScore)
+		}
+		if r.RerankSkippedReason != "" {
+			rerankInfo += ", rerank skipped: " + r.RerankSkippedReason + " (original rank kept)"
+		}
+		if r.RetrievalSource != "" {
+			rerankInfo += ", source: " + r.RetrievalSource
+		}
+		fmt.Printf("--- Result %d (score: %.4f%s, file: %s%s%s) ---\n", i+1, r.Score, rerankInfo, r.FilePath, typeLabel, pageInfo)
 		fmt.Println(r.Text)
 		fmt.Println()
 	}

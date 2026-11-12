@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,25 +17,37 @@ const defaultBatchSize = 32
 
 // Config holds configuration for the RAG engine
 type Config struct {
-	Model        string
-	Dimension    int
-	ChunkSize    int
-	ChunkOverlap int
-	TopK         int
-	MinScore     float64
-	PDFMaxPages  int
+	Model            string
+	Dimension        int
+	ChunkSize        int
+	ChunkOverlap     int
+	TopK             int
+	MinScore         float64
+	PDFMaxPages      int
+	SearchMode       string // hybrid (default), vector, or keyword
+	Rerank           bool
+	SearchUntilFound bool
+	OnWarning        func(string) // Per-query warning sink; defaults to stderr.
+	CandidateK       int          // candidate pool per hybrid search branch
+	RerankCandidateK int
+	RRFK             float64
 }
 
 // DefaultConfig returns a Config with sensible defaults
 func DefaultConfig() Config {
 	return Config{
-		Model:        "gemini-embedding-2",
-		Dimension:    768,
-		ChunkSize:    1000,
-		ChunkOverlap: 200,
-		TopK:         5,
-		MinScore:     0.3,
-		PDFMaxPages:  pdfutil.DefaultMaxPages,
+		Model:            "gemini-embedding-2",
+		Dimension:        768,
+		ChunkSize:        1000,
+		ChunkOverlap:     200,
+		TopK:             5,
+		MinScore:         0.3,
+		PDFMaxPages:      pdfutil.DefaultMaxPages,
+		SearchMode:       "hybrid",
+		Rerank:           true,
+		CandidateK:       30,
+		RerankCandidateK: 40,
+		RRFK:             60,
 	}
 }
 
@@ -52,6 +65,18 @@ type IndexResult struct {
 // Engine orchestrates the RAG indexing and query pipeline
 type Engine struct {
 	embeddingClient embedding.Client
+	reranker        Reranker
+}
+
+// Reranker reorders retrieval candidates while preserving their metadata.
+type Reranker interface {
+	Rerank(context.Context, string, []SearchResult) ([]SearchResult, error)
+}
+
+// WithReranker configures optional reranking. It is called during engine setup.
+func (e *Engine) WithReranker(r Reranker) *Engine {
+	e.reranker = r
+	return e
 }
 
 // NewEngine creates a new RAG engine
@@ -848,6 +873,10 @@ func (e *Engine) IndexMultimodalContent(storeName, fileName string, data []byte,
 
 // Query performs a semantic search against the local embedding store
 func (e *Engine) Query(question, storeName string, config Config) ([]SearchResult, error) {
+	return e.QueryContext(context.Background(), question, storeName, config)
+}
+
+func (e *Engine) QueryContext(ctx context.Context, question, storeName string, config Config) ([]SearchResult, error) {
 	// Load index
 	index, vectors, err := LoadIndex(storeName)
 	if err != nil {
@@ -857,11 +886,19 @@ func (e *Engine) Query(question, storeName string, config Config) ([]SearchResul
 		return nil, fmt.Errorf("store '%s' not found or empty", storeName)
 	}
 
-	return e.queryIndex(question, index, vectors, config)
+	dir, err := storeDir(storeName)
+	if err != nil {
+		return nil, err
+	}
+	return e.queryIndexWithCache(ctx, question, index, vectors, config, dir)
 }
 
 // QueryDir performs a semantic search against a RAG index in an arbitrary directory
 func (e *Engine) QueryDir(question, dir string, config Config) ([]SearchResult, error) {
+	return e.QueryDirContext(context.Background(), question, dir, config)
+}
+
+func (e *Engine) QueryDirContext(ctx context.Context, question, dir string, config Config) ([]SearchResult, error) {
 	index, vectors, err := LoadIndexFromDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load index from %s: %w", dir, err)
@@ -870,10 +907,23 @@ func (e *Engine) QueryDir(question, dir string, config Config) ([]SearchResult, 
 		return nil, fmt.Errorf("no index found in '%s'", dir)
 	}
 
-	return e.queryIndex(question, index, vectors, config)
+	return e.queryIndex(ctx, question, index, vectors, config)
 }
 
-func (e *Engine) queryIndex(question string, index *RagIndex, vectors []float32, config Config) ([]SearchResult, error) {
+func (e *Engine) queryIndex(ctx context.Context, question string, index *RagIndex, vectors []float32, config Config) ([]SearchResult, error) {
+	return e.queryIndexWithCache(ctx, question, index, vectors, config, "")
+}
+
+func (e *Engine) queryIndexWithCache(ctx context.Context, question string, index *RagIndex, vectors []float32, config Config, cacheDir string) ([]SearchResult, error) {
+	if err := config.ValidateQuery(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(index.Meta) == 0 {
+		return nil, nil
+	}
 	// Use the model from the index if available
 	model := config.Model
 	if index.EmbeddingModel != "" {
@@ -881,14 +931,59 @@ func (e *Engine) queryIndex(question string, index *RagIndex, vectors []float32,
 	}
 
 	// Embed query
-	queryVec, err := e.embeddingClient.EmbedContent(model, question, embedding.TaskRetrievalQuery, index.Dimension)
-	if err != nil {
-		return nil, fmt.Errorf("failed to embed query: %w", err)
+	var queryVec []float32
+	if config.SearchMode != "keyword" {
+		var err error
+		queryVec, err = e.embeddingClient.EmbedContent(model, question, embedding.TaskRetrievalQuery, index.Dimension)
+		if err != nil {
+			return nil, fmt.Errorf("failed to embed query: %w", err)
+		}
+		if len(queryVec) != index.Dimension {
+			return nil, fmt.Errorf("query embedding dimension %d does not match index dimension %d", len(queryVec), index.Dimension)
+		}
 	}
 
-	// Search
-	results := Search(queryVec, index, vectors, config.TopK, config.MinScore)
-
+	candidateK := config.CandidateK
+	if candidateK == 0 {
+		candidateK = 30
+	}
+	limit := config.TopK
+	if config.Rerank {
+		limit = config.RerankCandidateK
+		if limit == 0 {
+			limit = 40
+		}
+		if limit < config.TopK {
+			limit = config.TopK
+		}
+	}
+	if config.SearchUntilFound {
+		// Retrieve once, widening both branches so later batches remain reachable.
+		// Bound API work even for very large indexes.
+		limit = maxSearchUntilFoundCandidates
+		candidateK = maxSearchUntilFoundCandidates
+	}
+	var results []SearchResult
+	switch config.SearchMode {
+	case "keyword":
+		results = chunkResults(index, loadBM25(index.Meta, cacheDir).search(question, limit))
+	case "", "hybrid":
+		vector := vectorRanks(queryVec, index, vectors, candidateK, config.MinScore)
+		lexical := loadBM25(index.Meta, cacheDir).search(question, candidateK)
+		results = chunkResults(index, fuseRanks(vector, lexical, limit, config.RRFK))
+	default:
+		results = Search(queryVec, index, vectors, limit, config.MinScore)
+	}
+	if config.Rerank && len(results) > 0 {
+		var err error
+		results, err = e.rerankRetrieved(ctx, question, results, config)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if config.TopK > 0 && len(results) > config.TopK {
+		results = results[:config.TopK]
+	}
 	return results, nil
 }
 

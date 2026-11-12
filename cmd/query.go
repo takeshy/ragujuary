@@ -26,13 +26,13 @@ Example:
   ragujuary query "What are the main features of the application?"
   ragujuary query -s mystore "How does authentication work?"
   ragujuary query --stores store1,store2 "Search across multiple stores"
-  ragujuary query --model gemini-2.5-pro "Explain the architecture"`,
+  ragujuary query --model gemini-4-carbon "Explain the architecture"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runQuery,
 }
 
 func init() {
-	queryCmd.Flags().StringVarP(&queryModel, "model", "m", "gemini-3.5-flash", "Model to use for generation")
+	queryCmd.Flags().StringVarP(&queryModel, "model", "m", gemini.DefaultQueryModel, "Generation model (gemini-4-hydrogen, gemini-4-argon, gemini-4-carbon, etc.)")
 	queryCmd.Flags().StringVar(&queryMetadataFilter, "filter", "", "Metadata filter (e.g., 'author=\"John\"')")
 	queryCmd.Flags().BoolVar(&showCitations, "citations", false, "Show citation details")
 	queryCmd.Flags().StringSliceVar(&queryStores, "stores", nil, "Query multiple stores (comma-separated)")
@@ -40,6 +40,10 @@ func init() {
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {
+	model, err := gemini.ResolveQueryModel(queryModel)
+	if err != nil {
+		return err
+	}
 	key, err := getAPIKey()
 	if err != nil {
 		return err
@@ -77,7 +81,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Querying File Search Store(s) '%s'...\n\n", strings.Join(displayNames, ", "))
 
 	// Perform query
-	resp, err := client.Query(queryModel, query, storeNames, queryMetadataFilter)
+	resp, err := client.Query(model, query, storeNames, queryMetadataFilter)
 	if err != nil {
 		return fmt.Errorf("query failed: %w", err)
 	}

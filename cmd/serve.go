@@ -72,17 +72,17 @@ func init() {
 func runServe(cmd *cobra.Command, args []string) error {
 	// Get Gemini API key
 	key, err := getAPIKey()
-	if err != nil {
+	if err != nil && serveEmbedURL == "" {
 		return err
 	}
 
 	// Create MCP server config
 	config := mcpserver.ServerConfig{
-		APIKey:         key,
-		EmbedURL:       serveEmbedURL,
-		EmbedAPIKey:    getServeEmbeddingAPIKey(),
-		DataFile:       dataFile,
-		AllowedStores:  serveStores,
+		APIKey:        key,
+		EmbedURL:      serveEmbedURL,
+		EmbedAPIKey:   getServeEmbeddingAPIKey(),
+		DataFile:      dataFile,
+		AllowedStores: serveStores,
 	}
 
 	// Create MCP server

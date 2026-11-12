@@ -79,9 +79,9 @@ type OperationError struct {
 
 // UploadConfig represents the configuration for uploading a file
 type UploadConfig struct {
-	DisplayName    string            `json:"displayName,omitempty"`
-	CustomMetadata []CustomMetadata  `json:"customMetadata,omitempty"`
-	ChunkingConfig *ChunkingConfig   `json:"chunkingConfig,omitempty"`
+	DisplayName    string           `json:"displayName,omitempty"`
+	CustomMetadata []CustomMetadata `json:"customMetadata,omitempty"`
+	ChunkingConfig *ChunkingConfig  `json:"chunkingConfig,omitempty"`
 }
 
 // CustomMetadata represents custom metadata for a document
@@ -765,6 +765,10 @@ type RetrievedContext struct {
 
 // Query performs a query using File Search
 func (c *Client) Query(model string, query string, storeNames []string, metadataFilter string) (*GenerateContentResponse, error) {
+	model, err := ResolveQueryModel(model)
+	if err != nil {
+		return nil, err
+	}
 	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, model, c.apiKey)
 
 	// Ensure store names have prefix

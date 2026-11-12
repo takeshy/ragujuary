@@ -20,6 +20,9 @@ A CLI tool and MCP server for RAG (Retrieval-Augmented Generation) using Google'
 - **Multimodal support**: images (PNG/JPEG), PDF, video (MP4), audio (MP3/WAV) alongside text
 - **Automatic splitting**: PDFs over N pages (configurable, default 6, max 6), audio over 80s, and video over 80s/120s are automatically split into embeddable chunks
 - Local vector storage with cosine similarity search
+- Hybrid search (BM25 + vector + RRF) and Gemini Decision 1 text reranking enabled by default; each can be disabled
+- Japanese/CJK and identifier search, warning-based fallback, and preservation of unscorable media positions
+- Optional search-until-found: score successive candidate groups until relevant information is found
 - Smart text chunking (paragraph/sentence-aware, Japanese supported)
 - Incremental indexing (only re-embeds changed files)
 - Configurable chunk size, overlap, top-K, and min-score
@@ -106,6 +109,12 @@ To see available stores and their display names:
 ragujuary list --stores
 ```
 
+### Upgrading to 1.0
+
+- Local queries now default to hybrid search and Gemini Decision 1 reranking. Reranking sends eligible indexed text to Gemini and adds API usage. To keep vector-only retrieval without reranking, use `--search-mode vector --rerank=false`, or MCP parameters `"search_mode": "vector", "rerank": false`.
+- FileSearch generation defaults to `gemini-4-hydrogen`. Gemini 1.x/2.x generation IDs return a migration error; use a current model ID.
+- Existing embedding indexes remain usable without rebuilding. BM25 caches are built lazily; external index directories are not modified. Rebuild only when changing the embedding model itself.
+
 ## Usage
 
 ### FileSearch Mode
@@ -138,12 +147,17 @@ ragujuary query -s mystore "What are the main features?"
 # Query multiple stores
 ragujuary query --stores store1,store2 "Search across all docs"
 
-# Use a different model (default: gemini-3.5-flash)
-ragujuary query -s mystore -m gemini-2.5-flash "Explain the architecture"
+# Use a different model (default: gemini-4-hydrogen)
+ragujuary query -s mystore -m gemini-4-carbon "Explain the architecture"
+
+# Use Gemini 4 Argon
+ragujuary query -s mystore -m gemini-4-argon "Explain the architecture"
 
 # Show citation details
 ragujuary query -s mystore --citations "How does authentication work?"
 ```
+
+The default File Search generation model is `gemini-4-hydrogen`. You can also explicitly select `gemini-4-argon`, `gemini-4-carbon`, or `gemini-3.8-flash`. Gemini 1.x/2.x generation models are no longer supported by ragujuary and return an error rather than being silently substituted. See Google's [current models](https://aistudio.google.com/docs/models) and [deprecation schedule](https://aistudio.google.com/docs/deprecations). Embedding remains `gemini-embedding-2`; reranking uses `gemini-decision-1`. Changing the generation model does not require re-indexing. Existing local indexes keep their recorded embedding model, since switching embedding spaces requires rebuilding the index.
 
 #### List stores and files
 
@@ -279,7 +293,7 @@ Indexing is incremental: only files with changed checksums are re-embedded.
 Text queries search across all indexed content, including text chunks and multimodal files (cross-modal search in the same embedding space).
 
 ```bash
-# Semantic search (searches text and multimodal content)
+# Hybrid search + Gemini reranking (default)
 ragujuary embed query -s mystore "How does authentication work?"
 
 # Find images by description
@@ -288,11 +302,39 @@ ragujuary embed query -s mystore "photo of a cat"
 # Customize results
 ragujuary embed query -s mystore --top-k 10 --min-score 0.5 "error handling patterns"
 
+# Hybrid search: merge semantic and keyword rankings
+ragujuary embed query -s mystore --search-mode hybrid "PRJ-123 authentication failure"
+
+# Rerank candidates with the Gemini Decisions API, then return the best 5
+ragujuary embed query -s mystore --search-mode hybrid --rerank --top-k 5 "authentication setup"
+
+# Search successive groups until a relevant answer is found
+ragujuary embed query -s mystore --search-until-found "authentication setup"
+
+# Disable reranking while keeping hybrid search
+ragujuary embed query -s mystore --rerank=false "authentication setup"
+
+# Disable both hybrid search and reranking
+ragujuary embed query -s mystore --search-mode vector --rerank=false "authentication setup"
+
+# BM25 keyword search without calling the embedding API (no API key required)
+ragujuary embed query -s mystore --search-mode keyword --rerank=false "ERR_AUTH_42"
+
 # Query an external RAG index (created by other tools)
 ragujuary embed query --dir /path/to/external/rag/store "search query"
 ```
 
 The `--dir` flag allows querying RAG indexes created by external tools. It auto-detects both snake_case (ragujuary) and camelCase JSON field naming conventions. When `--dir` is specified, `--store` is not required.
+
+`--search-mode` defaults to `hybrid`, combining vector and BM25 ranks using reciprocal rank fusion (RRF). Select `--search-mode vector` to disable hybrid retrieval or `--search-mode keyword` for BM25 alone. `--candidate-k` controls candidates **per search branch** (default 30, maximum 1000); `--rrf-k` sets the RRF constant (default 60). `--min-score` gates only vector similarity, so keyword matches below that threshold can still appear. Hybrid scores are RRF scores, keyword scores are BM25 scores, and vector scores are cosine similarities. Hybrid results include `source: vector`, `bm25`, or `both`. Final `--top-k` is applied after reranking, when enabled.
+
+BM25 searches chunk text. It normalizes full-width characters, preserves identifiers such as `PRJ-123` and `snake_case` both whole and split, and uses overlapping CJK bigrams (the common library's fallback tokenizer). Existing embeddings remain usable. Native stores lazily build `bm25-ragujuary.json`, reusing unchanged token frequencies and updating edited, added, or removed chunks on the next lexical search. Missing or invalid caches are rebuilt; cache write failures do not prevent searching. Vector-only queries do not access the cache. External indexes build BM25 in memory and are never modified.
+
+Reranking is **enabled by default** using [Gemini Decisions API](https://aistudio.google.com/docs/decisions-api), model `gemini-decision-1`. Disable it with `--rerank=false`. Scoring uses `GEMINI_API_KEY` or `--api-key`, also when embeddings use Ollama or another backend. `--rerank-candidate-k` sets the reranking pool (default 40, maximum 1000, raised to at least Top K). Normal hybrid retrieval uses its independent per-branch candidate limit. Candidates receive relevance scores from 0 (unrelated) to 3 (directly answers the query); fractional scores are supported, ties keep retrieval order, and the original retrieval score is preserved. The final Top K is applied **after** reranking. If credentials are missing, the API fails, scores are incomplete, or scoring times out, the original retrieval's Top K results are returned **with a warning**. No partial reranking is retained. CLI warnings go to stderr; MCP warnings appear in both `warnings` and the text answer. Cancellation of the query remains an error. Each candidate group's scoring has a 20-second deadline, including retries. Oversized requests are split without truncating text. Default reranking sends eligible indexed text to Gemini and adds API latency and input-token usage; use `--rerank=false` for local-only keyword or embedding backends.
+
+Reranking scores text and available extracted PDF text. Images, audio, video, scanned PDFs with only a placeholder label, and empty chunks are **not scored from their filenames or labels**. These candidates keep their original retrieval positions, while scored candidates are reordered only within the remaining positions; their `rerank_skipped_reason` explains why they were skipped. A warning identifies that some candidates were protected. No binary files are read or uploaded for scoring. Vector search continues to support all indexed modalities. FileSearch mode uses managed retrieval and does not expose these local search options.
+
+`--search-until-found` is optional and defaults to OFF. It embeds the query and retrieves candidates **once**, widening retrieval to at most **1000 fused candidates** (up to 1000 per branch before fusion) independently of the normal `--candidate-k`. It scores successive groups sized by `--rerank-candidate-k` (at least Top K), stopping at the first group with relevance **2/3 or above** and returning only those matches from that group, sorted by relevance and limited to Top K. If no group contains a match, the result is empty; reaching the 1000-candidate limit produces a warning. An API failure or an unscorable candidate in a group stops the loop and returns the **original retrieval's Top K with a warning**, since an unscored candidate is not evidence of low relevance. `--search-until-found --rerank=false` is rejected. More candidate groups mean more API calls and input-token usage.
 
 #### List indexed files
 
@@ -390,20 +432,28 @@ Upload a file to a store. Embedding stores index content locally; FileSearch sto
 
 ##### `query` - Query documents
 
-Query documents using natural language. Embedding stores use cosine similarity search; FileSearch stores use Gemini's grounded generation with citations.
+Query documents using natural language. Embedding stores default to hybrid search and Gemini Decision 1 reranking, with independent opt-outs and optional search-until-found. FileSearch stores use Gemini's grounded generation with citations.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `store_name` | string | No* | Name of the store |
 | `store_names` | array | No* | Names of multiple stores to query |
 | `question` | string | Yes | The question to ask about your documents |
-| `model` | string | No | Model to use (default: gemini-3.5-flash for FileSearch) |
+| `model` | string | No | Generation model (default: gemini-4-hydrogen; alternatives: gemini-4-argon, gemini-4-carbon; FileSearch only) |
 | `metadata_filter` | string | No | Metadata filter expression (FileSearch only) |
 | `show_citations` | boolean | No | Include citation details (FileSearch only) |
 | `top_k` | integer | No | Number of top results (default: 5, embedding stores only) |
-| `min_score` | number | No | Minimum similarity score (default: 0.3, embedding stores only) |
+| `min_score` | number | No | Minimum vector similarity (default: 0.3; explicit 0 supported; does not gate keyword hits) |
+| `search_mode` | string | No | `hybrid` (default), `vector`, or `keyword` (embedding stores only) |
+| `candidate_k` | integer | No | Candidates per hybrid branch (default: 30, maximum: 1000) |
+| `rrf_k` | number | No | RRF rank constant (default: 60) |
+| `rerank` | boolean | No | Gemini Decision 1 text reranking (default: true; explicit false disables it) |
+| `rerank_candidate_k` | integer | No | Reranking pool (default: 40, maximum: 1000, at least Top K) |
+| `search_until_found` | boolean | No | Score successive groups until relevance ≥ 2/3 is found (default: false; requires reranking; max 1000 candidates) |
 
 *Either `store_name` or `store_names` must be provided.
+
+For embedding stores, the output also includes structured `results` with full text, file/page metadata, the retrieval `score`, optional `retrieval_source` and `rerank_score` (0–3), and `rerank_skipped_reason` for protected unscorable candidates. `warnings` records fallback, protected media, and search-limit notices. To disable both defaults, set `"search_mode": "vector", "rerank": false`; omission of `rerank` enables it. These local search options are rejected for FileSearch stores.
 
 ##### `list` - List documents in a store
 

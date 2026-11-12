@@ -1,5 +1,7 @@
 package mcp
 
+import "github.com/takeshy/ragujuary/internal/rag"
+
 // UploadInput represents input for the upload tool (works for both FileSearch and Embedding stores)
 type UploadInput struct {
 	StoreName    string `json:"store_name" jsonschema:"name of the store"`
@@ -22,20 +24,28 @@ type UploadOutput struct {
 
 // QueryInput represents input for the query tool (works for both FileSearch and Embedding stores)
 type QueryInput struct {
-	Question       string   `json:"question" jsonschema:"the question to ask about your documents"`
-	StoreName      string   `json:"store_name" jsonschema:"name of the store (required unless store_names is provided)"`
-	StoreNames     []string `json:"store_names,omitempty" jsonschema:"names of multiple stores to query (alternative to store_name)"`
-	Model          string   `json:"model,omitempty" jsonschema:"model to use (default: gemini-3.5-flash for FileSearch)"`
-	MetadataFilter string   `json:"metadata_filter,omitempty" jsonschema:"metadata filter expression - FileSearch only"`
-	ShowCitations  bool     `json:"show_citations,omitempty" jsonschema:"include citation details - FileSearch only"`
-	TopK           int      `json:"top_k,omitempty" jsonschema:"number of top results (default: 5) - embedding stores only"`
-	MinScore       float64  `json:"min_score,omitempty" jsonschema:"minimum similarity score (default: 0.3) - embedding stores only"`
+	Question         string   `json:"question" jsonschema:"the question to ask about your documents"`
+	StoreName        string   `json:"store_name" jsonschema:"name of the store (required unless store_names is provided)"`
+	StoreNames       []string `json:"store_names,omitempty" jsonschema:"names of multiple stores to query (alternative to store_name)"`
+	Model            string   `json:"model,omitempty" jsonschema:"generation model for FileSearch (default: gemini-4-hydrogen; alternatives: gemini-4-argon, gemini-4-carbon)"`
+	MetadataFilter   string   `json:"metadata_filter,omitempty" jsonschema:"metadata filter expression - FileSearch only"`
+	ShowCitations    bool     `json:"show_citations,omitempty" jsonschema:"include citation details - FileSearch only"`
+	TopK             int      `json:"top_k,omitempty" jsonschema:"number of top results (default: 5) - embedding stores only"`
+	MinScore         *float64 `json:"min_score,omitempty" jsonschema:"minimum vector similarity score (default: 0.3; keyword hits are not gated by this threshold) - embedding stores only"`
+	SearchMode       string   `json:"search_mode,omitempty" jsonschema:"hybrid (default: vector plus BM25 with RRF), vector, or keyword (BM25) - embedding stores only"`
+	Rerank           *bool    `json:"rerank,omitempty" jsonschema:"rerank indexed text with Gemini Decision 1 (default: true; set false to disable) - embedding stores only"`
+	SearchUntilFound bool     `json:"search_until_found,omitempty" jsonschema:"score successive candidate groups until relevance >= 2/3 is found (default: false; requires reranking; max 1000 candidates) - embedding stores only"`
+	CandidateK       int      `json:"candidate_k,omitempty" jsonschema:"candidates per hybrid search branch (default: 30, max: 1000) - embedding stores only"`
+	RerankCandidateK int      `json:"rerank_candidate_k,omitempty" jsonschema:"candidates to rerank (default: 40, max: 1000, raised to top_k if needed) - embedding stores only"`
+	RRFK             float64  `json:"rrf_k,omitempty" jsonschema:"RRF rank constant (default: 60) - embedding stores only"`
 }
 
 // QueryOutput represents output from the query tool
 type QueryOutput struct {
-	Answer    string         `json:"answer"`
-	Citations []CitationInfo `json:"citations,omitempty"`
+	Answer    string             `json:"answer"`
+	Citations []CitationInfo     `json:"citations,omitempty"`
+	Results   []rag.SearchResult `json:"results,omitempty"`
+	Warnings  []string           `json:"warnings,omitempty"`
 }
 
 // CitationInfo represents a citation source

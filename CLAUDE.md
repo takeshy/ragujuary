@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Ragujuary is a CLI tool and MCP server for RAG (Retrieval-Augmented Generation) using Google's Gemini APIs. It supports two RAG modes:
 
 1. **FileSearch mode** - Managed RAG using Gemini File Search Stores (server-side retrieval with citations)
-2. **Embedding mode** - Self-managed RAG using Gemini Embedding API (local vector storage with cosine similarity search)
+2. **Embedding mode** - Self-managed RAG using Gemini Embedding API (local vectors, hybrid vector/BM25 retrieval, and Gemini Decision 1 reranking by default)
 
 ## Build Commands
 
@@ -25,7 +25,7 @@ make release
 go run .
 ```
 
-Version is set via LDFLAGS in Makefile (currently 0.19.0).
+Version is set via LDFLAGS in Makefile (currently 1.0.0).
 
 ## Architecture
 
@@ -76,7 +76,7 @@ internal/
 
 **Embed Index**: CLI → File discovery with regex filtering → SHA256 checksum for incremental updates → Smart text chunking (paragraph/sentence boundaries) → Batch embedding via Gemini Embedding API → Merge unchanged + new vectors → Save to local binary store
 
-**Embed Query**: User question → Embed with RETRIEVAL_QUERY task type → Load local index + vectors → Cosine similarity search → Top-K results with scores
+**Embed Query**: User question → Embed query once → Load local index + vectors → Fuse cosine and BM25 ranks with RRF → Score text with Gemini Decision 1 → Top-K results. Hybrid and reranking default ON; `--search-mode vector` and `--rerank=false` disable them independently. Scoring failures return original results with warnings; unscorable media keep their retrieval positions. Optional `--search-until-found` checks groups until relevance reaches 2/3, up to 1000 candidates.
 
 ## Configuration
 
@@ -86,7 +86,7 @@ Environment variables:
 - `RAGUJUARY_SERVE_API_KEY` - MCP server authentication
 
 Local metadata: `~/.ragujuary.json` (JSON with stores, files, checksums, timestamps)
-Embedding stores: `~/.ragujuary-embed/<store-name>/` (index.json + vectors.bin)
+Embedding stores: `~/.ragujuary-embed/<store-name>/` (index.json + vectors.bin; lexical search lazily builds bm25-ragujuary.json). External indexes remain read-only.
 
 ## Dependencies
 
@@ -100,6 +100,13 @@ Embedding stores: `~/.ragujuary-embed/<store-name>/` (index.json + vectors.bin)
 - Upload URL: `https://generativelanguage.googleapis.com/upload/v1beta`
 - Authentication: Query parameter `?key=<GEMINI_API_KEY>`
 - Uses Google's resumable upload protocol for reliability
+- Default generation model: `gemini-4-hydrogen`; Gemini 1.x/2.x generation IDs are rejected with migration guidance.
+
+### Decisions API
+- Endpoint: `POST https://generativelanguage.googleapis.com/v1beta/decisions`
+- Authentication: `x-goog-api-key` header
+- Reranking model: `gemini-decision-1`, relevance rubric 0–3
+- Each group has a 20-second deadline; failures warn and restore original retrieval order.
 
 ### Embedding API
 - Endpoint: `POST /v1beta/models/{model}:embedContent` (single)
@@ -150,9 +157,9 @@ Embedding stores: `~/.ragujuary-embed/<store-name>/` (index.json + vectors.bin)
 | Feature | FileSearch (managed) | Embedding (local) |
 |---------|---------------------|-------------------|
 | Storage | Gemini Cloud | Local (~/.ragujuary-embed/) |
-| Retrieval | Server-side with citations | Cosine similarity search |
+| Retrieval | Server-side with citations | Hybrid vector/BM25 + RRF and text reranking by default |
 | Chunking | Gemini automatic | Custom (paragraph/sentence-aware) |
-| Query | GenerateContent + FileSearch tool | Embed query + vector search |
+| Query | GenerateContent + FileSearch tool | Embed query once + hybrid search + optional repeated scoring |
 | CLI commands | upload/query/list/delete | embed index/query/list/delete/clear |
 | MCP tools | upload/query/list/delete/create_store/delete_store/list_stores/upload_directory (unified, auto-detect by store name) ||
 | Incremental | SHA256 checksum | SHA256 checksum |
